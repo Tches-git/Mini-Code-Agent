@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getRunCommandPolicy } from "./command.js";
 import { promises as fs } from "node:fs";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getRunCommandPolicy } from "./command.js";
 
 const FAKE_PACKAGE_JSON = JSON.stringify({
   scripts: {
@@ -288,7 +288,7 @@ describe("getRunCommandPolicy", () => {
     });
 
     it("blocks overly long command (>2000 chars)", async () => {
-      const longCommand = "ls " + "a".repeat(2000);
+      const longCommand = `ls ${"a".repeat(2000)}`;
       const result = await getRunCommandPolicy(longCommand);
       expect(result.decision).toBe("block");
       expect(result.reason).toContain("2000");

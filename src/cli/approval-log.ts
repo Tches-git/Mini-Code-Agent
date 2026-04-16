@@ -1,11 +1,11 @@
 import chalk from "chalk";
 import {
-  readCommandAuditEntries,
   type CommandAuditAction,
   type CommandAuditDecision,
   type CommandAuditEntry,
   type CommandAuditKind,
-  type CommandAuditSource
+  type CommandAuditSource,
+  readCommandAuditEntries,
 } from "../utils/command-audit.js";
 
 export type ApprovalLogFilters = {
@@ -109,13 +109,18 @@ function splitQueryTokens(input: string): string[] {
 }
 
 function unquoteToken(token: string): string {
-  if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+  if (
+    (token.startsWith('"') && token.endsWith('"')) ||
+    (token.startsWith("'") && token.endsWith("'"))
+  ) {
     return token.slice(1, -1);
   }
   return token;
 }
 
-export function parseApprovalLogQueryText(input: string): ParsedApprovalLogQuery {
+export function parseApprovalLogQueryText(
+  input: string,
+): ParsedApprovalLogQuery {
   const filters: ApprovalLogFilters = {};
   const options: ApprovalLogPrintOptions = {};
   const containsParts: string[] = [];
@@ -196,7 +201,10 @@ export function parseApprovalLogQueryText(input: string): ParsedApprovalLogQuery
   return { filters, options };
 }
 
-export async function printApprovalLog(filters: ApprovalLogFilters, options?: ApprovalLogPrintOptions): Promise<void> {
+export async function printApprovalLog(
+  filters: ApprovalLogFilters,
+  options?: ApprovalLogPrintOptions,
+): Promise<void> {
   const entries = await readCommandAuditEntries(filters);
 
   if (options?.json) {
@@ -224,7 +232,7 @@ export async function printApprovalLog(filters: ApprovalLogFilters, options?: Ap
 
   for (const entry of entries) {
     console.log(
-      `  ${formatDecision(entry.decision)} ${chalk.gray(formatTimestamp(entry.timestamp))} ${chalk.magenta(`[${entry.source}]`)} ${chalk.cyan(`[${formatKind(entry.kind)}/${formatAction(entry.action)}]`)}`
+      `  ${formatDecision(entry.decision)} ${chalk.gray(formatTimestamp(entry.timestamp))} ${chalk.magenta(`[${entry.source}]`)} ${chalk.cyan(`[${formatKind(entry.kind)}/${formatAction(entry.action)}]`)}`,
     );
     console.log(chalk.white(`    ${entry.command}`));
     if (entry.targetPath) {

@@ -8,8 +8,27 @@ import { isPathOutsideWorkspace } from "../utils/path.js";
 import { createTool } from "./create-tool.js";
 
 const SHELL_SYNTAX_PATTERN = /&&|\|\||[|;<>`$\n\r]/;
-const SAFE_EXECUTABLES = new Set(["cat", "find", "head", "ls", "pwd", "rg", "sed", "stat", "tail", "wc", "which"]);
-const SAFE_TOOLCHAIN_EXECUTABLES = new Set(["eslint", "jest", "prettier", "tsc", "vite", "vitest"]);
+const SAFE_EXECUTABLES = new Set([
+  "cat",
+  "find",
+  "head",
+  "ls",
+  "pwd",
+  "rg",
+  "sed",
+  "stat",
+  "tail",
+  "wc",
+  "which",
+]);
+const SAFE_TOOLCHAIN_EXECUTABLES = new Set([
+  "eslint",
+  "jest",
+  "prettier",
+  "tsc",
+  "vite",
+  "vitest",
+]);
 const BLOCKED_EXECUTABLES = new Set([
   "rm",
   "rmdir",
@@ -22,15 +41,72 @@ const BLOCKED_EXECUTABLES = new Set([
   "poweroff",
   "sudo",
   "launchctl",
-  "osascript"
+  "osascript",
 ]);
-const BLOCKED_NETWORK_EXECUTABLES = new Set(["curl", "wget", "ssh", "scp", "sftp", "nc", "ncat", "telnet"]);
+const BLOCKED_NETWORK_EXECUTABLES = new Set([
+  "curl",
+  "wget",
+  "ssh",
+  "scp",
+  "sftp",
+  "nc",
+  "ncat",
+  "telnet",
+]);
 const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn", "bun"]);
-const SAFE_GIT_SUBCOMMANDS = new Set(["branch", "diff", "log", "rev-parse", "show", "status"]);
-const GUARDED_GIT_SUBCOMMANDS = new Set(["add", "checkout", "cherry-pick", "commit", "fetch", "merge", "pull", "push", "rebase", "restore", "stash", "switch", "tag"]);
-const SAFE_PACKAGE_MANAGER_SCRIPTS = new Set(["build", "check", "lint", "test", "typecheck"]);
-const GUARDED_PACKAGE_MANAGER_SCRIPTS = new Set(["dev", "install", "migrate", "seed", "start"]);
-const GUARDED_PACKAGE_MANAGER_SUBCOMMANDS = new Set(["add", "ci", "create", "dlx", "exec", "import", "init", "install", "link", "remove", "unlink", "update", "upgrade"]);
+const SAFE_GIT_SUBCOMMANDS = new Set([
+  "branch",
+  "diff",
+  "log",
+  "rev-parse",
+  "show",
+  "status",
+]);
+const GUARDED_GIT_SUBCOMMANDS = new Set([
+  "add",
+  "checkout",
+  "cherry-pick",
+  "commit",
+  "fetch",
+  "merge",
+  "pull",
+  "push",
+  "rebase",
+  "restore",
+  "stash",
+  "switch",
+  "tag",
+]);
+const SAFE_PACKAGE_MANAGER_SCRIPTS = new Set([
+  "build",
+  "check",
+  "lint",
+  "test",
+  "typecheck",
+]);
+const GUARDED_PACKAGE_MANAGER_SCRIPTS = new Set([
+  "chat",
+  "dev",
+  "install",
+  "migrate",
+  "seed",
+  "start",
+]);
+const GUARDED_PACKAGE_MANAGER_SUBCOMMANDS = new Set([
+  "add",
+  "ci",
+  "create",
+  "dlx",
+  "exec",
+  "import",
+  "init",
+  "install",
+  "link",
+  "remove",
+  "unlink",
+  "update",
+  "upgrade",
+]);
 const SAFE_PACKAGE_MANAGER_SUBCOMMANDS = new Set(["run", "test"]);
 
 const BLOCKED_SUBSTRINGS = [
@@ -64,7 +140,7 @@ const BLOCKED_SUBSTRINGS = [
 ];
 
 const BLOCKED_PATTERNS: RegExp[] = [
-  /rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/(?![\w])/, 
+  /rm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/(?![\w])/,
   />\s*\/dev\/[sh]d[a-z]/,
   /sudo\s+rm\s/,
   /chmod\s+-?R?\s*777\s/,
@@ -83,7 +159,6 @@ export type CommandPolicy = {
   executable: string;
 };
 
-
 function parseConfiguredRules(envName: string): string[] {
   const raw = process.env[envName];
   if (!raw) return [];
@@ -93,7 +168,10 @@ function parseConfiguredRules(envName: string): string[] {
     .filter(Boolean);
 }
 
-function matchesConfiguredRule(command: string, rules: string[]): string | null {
+function matchesConfiguredRule(
+  command: string,
+  rules: string[],
+): string | null {
   for (const rule of rules) {
     if (rule.endsWith("*")) {
       const prefix = rule.slice(0, -1);
@@ -108,7 +186,6 @@ function matchesConfiguredRule(command: string, rules: string[]): string | null 
   }
   return null;
 }
-
 
 function getExecutableName(file: string): string {
   return path.basename(file).toLowerCase();
@@ -197,7 +274,7 @@ function isDangerous(command: string): string | null {
 
   for (const blocked of BLOCKED_SUBSTRINGS) {
     if (normalized.includes(blocked.toLowerCase())) {
-      return `匹配黑名单: \"${blocked}\"`;
+      return `匹配黑名单: "${blocked}"`;
     }
   }
 
@@ -212,7 +289,9 @@ function isDangerous(command: string): string | null {
 
 async function readPackageScripts(): Promise<Record<string, string>> {
   try {
-    const packageJson = JSON.parse(await fs.readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
+    const packageJson = JSON.parse(
+      await fs.readFile(path.join(process.cwd(), "package.json"), "utf8"),
+    ) as {
       scripts?: Record<string, string>;
     };
     return packageJson.scripts || {};
@@ -221,86 +300,285 @@ async function readPackageScripts(): Promise<Record<string, string>> {
   }
 }
 
+async function resolveLocalToolchainCommand(executable: string): Promise<
+  | {
+      file: string;
+      args: string[];
+    }
+  | undefined
+> {
+  const localBinPath = path.join(process.cwd(), "node_modules", ".bin", executable);
+
+  try {
+    await fs.access(localBinPath);
+  } catch {
+    return undefined;
+  }
+
+  return {
+    file: process.execPath,
+    args: [localBinPath],
+  };
+}
+
+async function assessProjectScript(
+  executable: string,
+  scriptName: string,
+  scriptCommand: string,
+): Promise<CommandPolicy> {
+  const syntaxIssue = isDangerous(scriptCommand.trim());
+  if (syntaxIssue) {
+    return {
+      decision: "confirm",
+      reason: `${executable} run ${scriptName} 会执行复杂项目脚本，需要用户确认`,
+      executable,
+    };
+  }
+
+  let file = "";
+  let args: string[] = [];
+  try {
+    [file, ...args] = tokenizeCommand(scriptCommand);
+  } catch {
+    return {
+      decision: "confirm",
+      reason: `${executable} run ${scriptName} 会执行项目脚本，需要用户确认`,
+      executable,
+    };
+  }
+
+  if (!file) {
+    return {
+      decision: "confirm",
+      reason: `${executable} run ${scriptName} 会执行项目脚本，需要用户确认`,
+      executable,
+    };
+  }
+
+  const executableIssue = validateExecutable(file);
+  if (executableIssue) {
+    return {
+      decision: "block",
+      reason: `${executable} run ${scriptName} 对应脚本不允许执行: ${executableIssue}`,
+      executable,
+    };
+  }
+
+  const scriptExecutable = getExecutableName(file);
+  if (file.includes("/")) {
+    return {
+      decision: "confirm",
+      reason: `${executable} run ${scriptName} 会直接执行本地脚本，需要用户确认`,
+      executable,
+    };
+  }
+
+  if (scriptExecutable === "node" || scriptExecutable === "tsx") {
+    return {
+      decision: "confirm",
+      reason: `${executable} run ${scriptName} 会直接执行本地代码，需要用户确认`,
+      executable,
+    };
+  }
+
+  if (
+    SAFE_EXECUTABLES.has(scriptExecutable) ||
+    SAFE_TOOLCHAIN_EXECUTABLES.has(scriptExecutable)
+  ) {
+    return {
+      decision: "allow",
+      reason: `${executable} run ${scriptName} 属于已知安全脚本`,
+      executable,
+    };
+  }
+
+  if (scriptExecutable === "git") {
+    const gitPolicy = await assessGitCommand(args);
+    return gitPolicy.decision === "allow"
+      ? {
+          decision: "allow",
+          reason: `${executable} run ${scriptName} 属于已知安全脚本`,
+          executable,
+        }
+      : {
+          decision: "confirm",
+          reason: `${executable} run ${scriptName} 会执行项目脚本，需要用户确认`,
+          executable,
+        };
+  }
+
+  return {
+    decision: "confirm",
+    reason: `${executable} run ${scriptName} 会执行项目脚本，需要用户确认`,
+    executable,
+  };
+}
+
 async function assessGitCommand(args: string[]): Promise<CommandPolicy> {
   const subcommand = args[0]?.toLowerCase();
   if (!subcommand) {
-    return { decision: "allow", reason: "git 帮助命令允许直接执行", executable: "git" };
+    return {
+      decision: "allow",
+      reason: "git 帮助命令允许直接执行",
+      executable: "git",
+    };
   }
   if (SAFE_GIT_SUBCOMMANDS.has(subcommand)) {
-    return { decision: "allow", reason: `git ${subcommand} 属于只读或低风险命令`, executable: "git" };
+    return {
+      decision: "allow",
+      reason: `git ${subcommand} 属于只读或低风险命令`,
+      executable: "git",
+    };
   }
   if (GUARDED_GIT_SUBCOMMANDS.has(subcommand)) {
-    return { decision: "confirm", reason: `git ${subcommand} 可能修改仓库状态，需要用户确认`, executable: "git" };
+    return {
+      decision: "confirm",
+      reason: `git ${subcommand} 可能修改仓库状态，需要用户确认`,
+      executable: "git",
+    };
   }
-  return { decision: "block", reason: `git ${subcommand} 不在允许列表中`, executable: "git" };
+  return {
+    decision: "block",
+    reason: `git ${subcommand} 不在允许列表中`,
+    executable: "git",
+  };
 }
 
-async function assessPackageManagerCommand(executable: string, args: string[]): Promise<CommandPolicy> {
+async function assessPackageManagerCommand(
+  executable: string,
+  args: string[],
+): Promise<CommandPolicy> {
   const scripts = await readPackageScripts();
   const subcommand = args[0]?.toLowerCase();
 
   if (!subcommand) {
-    return { decision: "allow", reason: `${executable} 帮助命令允许直接执行`, executable };
+    return {
+      decision: "allow",
+      reason: `${executable} 帮助命令允许直接执行`,
+      executable,
+    };
   }
 
-  if (!SAFE_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand) && !GUARDED_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand)) {
+  if (
+    !SAFE_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand) &&
+    !GUARDED_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand)
+  ) {
     if (executable === "yarn" && scripts[subcommand]) {
       if (SAFE_PACKAGE_MANAGER_SCRIPTS.has(subcommand)) {
-        return { decision: "allow", reason: `${executable} ${subcommand} 属于已知安全脚本`, executable };
+        return assessProjectScript(executable, subcommand, scripts[subcommand]);
       }
-      return { decision: "confirm", reason: `${executable} ${subcommand} 会执行项目脚本，需要用户确认`, executable };
+      return {
+        decision: "confirm",
+        reason: `${executable} ${subcommand} 会执行项目脚本，需要用户确认`,
+        executable,
+      };
     }
-    return { decision: "block", reason: `${executable} ${subcommand} 不在允许列表中`, executable };
+    return {
+      decision: "block",
+      reason: `${executable} ${subcommand} 不在允许列表中`,
+      executable,
+    };
   }
 
   if (GUARDED_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand)) {
-    return { decision: "confirm", reason: `${executable} ${subcommand} 可能安装依赖或执行外部代码，需要用户确认`, executable };
+    return {
+      decision: "confirm",
+      reason: `${executable} ${subcommand} 可能安装依赖或执行外部代码，需要用户确认`,
+      executable,
+    };
   }
 
   if (subcommand === "test") {
-    return { decision: "allow", reason: `${executable} test 属于验证命令`, executable };
+    return {
+      decision: "allow",
+      reason: `${executable} test 属于验证命令`,
+      executable,
+    };
   }
 
   if (subcommand === "run") {
     const scriptName = args[1]?.toLowerCase();
     if (!scriptName) {
-      return { decision: "block", reason: `${executable} run 需要指定脚本名`, executable };
+      return {
+        decision: "block",
+        reason: `${executable} run 需要指定脚本名`,
+        executable,
+      };
     }
     if (!scripts[scriptName]) {
-      return { decision: "block", reason: `项目中不存在脚本 ${scriptName}`, executable };
+      return {
+        decision: "block",
+        reason: `项目中不存在脚本 ${scriptName}`,
+        executable,
+      };
     }
     if (SAFE_PACKAGE_MANAGER_SCRIPTS.has(scriptName)) {
-      return { decision: "allow", reason: `${executable} run ${scriptName} 属于已知安全脚本`, executable };
+      return assessProjectScript(executable, scriptName, scripts[scriptName]);
     }
     if (GUARDED_PACKAGE_MANAGER_SCRIPTS.has(scriptName)) {
-      return { decision: "confirm", reason: `${executable} run ${scriptName} 可能启动服务或改动环境，需要用户确认`, executable };
+      return {
+        decision: "confirm",
+        reason: `${executable} run ${scriptName} 可能启动服务或改动环境，需要用户确认`,
+        executable,
+      };
     }
-    return { decision: "confirm", reason: `${executable} run ${scriptName} 会执行项目脚本，需要用户确认`, executable };
+    return {
+      decision: "confirm",
+      reason: `${executable} run ${scriptName} 会执行项目脚本，需要用户确认`,
+      executable,
+    };
   }
 
-  return { decision: "allow", reason: `${executable} ${subcommand} 属于允许的包管理器命令`, executable };
+  return {
+    decision: "allow",
+    reason: `${executable} ${subcommand} 属于允许的包管理器命令`,
+    executable,
+  };
 }
 
-export async function getRunCommandPolicy(command: string): Promise<CommandPolicy> {
+export async function getRunCommandPolicy(
+  command: string,
+): Promise<CommandPolicy> {
   const normalizedCommand = command.trim();
   const syntaxIssue = isDangerous(normalizedCommand);
   if (syntaxIssue) {
     return { decision: "block", reason: syntaxIssue, executable: "" };
   }
 
-  const blockedRule = matchesConfiguredRule(normalizedCommand, parseConfiguredRules("RUN_COMMAND_BLOCKLIST"));
+  const blockedRule = matchesConfiguredRule(
+    normalizedCommand,
+    parseConfiguredRules("RUN_COMMAND_BLOCKLIST"),
+  );
   if (blockedRule) {
-    return { decision: "block", reason: `命中环境变量 RUN_COMMAND_BLOCKLIST 规则: ${blockedRule}`, executable: "" };
+    return {
+      decision: "block",
+      reason: `命中环境变量 RUN_COMMAND_BLOCKLIST 规则: ${blockedRule}`,
+      executable: "",
+    };
   }
 
-  const allowedRule = matchesConfiguredRule(normalizedCommand, parseConfiguredRules("RUN_COMMAND_ALLOWLIST"));
+  const allowedRule = matchesConfiguredRule(
+    normalizedCommand,
+    parseConfiguredRules("RUN_COMMAND_ALLOWLIST"),
+  );
   if (allowedRule) {
-    return { decision: "allow", reason: `命中环境变量 RUN_COMMAND_ALLOWLIST 规则: ${allowedRule}`, executable: "" };
+    return {
+      decision: "allow",
+      reason: `命中环境变量 RUN_COMMAND_ALLOWLIST 规则: ${allowedRule}`,
+      executable: "",
+    };
   }
 
-  const guardedRule = matchesConfiguredRule(normalizedCommand, parseConfiguredRules("RUN_COMMAND_GUARDLIST"));
+  const guardedRule = matchesConfiguredRule(
+    normalizedCommand,
+    parseConfiguredRules("RUN_COMMAND_GUARDLIST"),
+  );
   if (guardedRule) {
-    return { decision: "confirm", reason: `命中环境变量 RUN_COMMAND_GUARDLIST 规则: ${guardedRule}`, executable: "" };
+    return {
+      decision: "confirm",
+      reason: `命中环境变量 RUN_COMMAND_GUARDLIST 规则: ${guardedRule}`,
+      executable: "",
+    };
   }
 
   let file = "";
@@ -311,7 +589,7 @@ export async function getRunCommandPolicy(command: string): Promise<CommandPolic
     return {
       decision: "block",
       reason: error instanceof Error ? error.message : String(error),
-      executable: ""
+      executable: "",
     };
   }
 
@@ -326,11 +604,22 @@ export async function getRunCommandPolicy(command: string): Promise<CommandPolic
   }
 
   if (file.includes("/")) {
-    return { decision: "confirm", reason: `执行工作区脚本 ${file} 会直接运行本地代码，需要用户确认`, executable };
+    return {
+      decision: "confirm",
+      reason: `执行工作区脚本 ${file} 会直接运行本地代码，需要用户确认`,
+      executable,
+    };
   }
 
-  if (SAFE_EXECUTABLES.has(executable) || SAFE_TOOLCHAIN_EXECUTABLES.has(executable)) {
-    return { decision: "allow", reason: `${executable} 在安全白名单内`, executable };
+  if (
+    SAFE_EXECUTABLES.has(executable) ||
+    SAFE_TOOLCHAIN_EXECUTABLES.has(executable)
+  ) {
+    return {
+      decision: "allow",
+      reason: `${executable} 在安全白名单内`,
+      executable,
+    };
   }
 
   if (executable === "git") {
@@ -342,14 +631,26 @@ export async function getRunCommandPolicy(command: string): Promise<CommandPolic
   }
 
   if (executable === "node" || executable === "tsx") {
-    return { decision: "confirm", reason: `${executable} 会直接执行本地脚本，需要用户确认`, executable };
+    return {
+      decision: "confirm",
+      reason: `${executable} 会直接执行本地脚本，需要用户确认`,
+      executable,
+    };
   }
 
   if (executable === "npx") {
-    return { decision: "confirm", reason: "npx 可能下载并执行外部包，需要用户确认", executable };
+    return {
+      decision: "confirm",
+      reason: "npx 可能下载并执行外部包，需要用户确认",
+      executable,
+    };
   }
 
-  return { decision: "block", reason: `命令 ${executable} 不在允许白名单中`, executable };
+  return {
+    decision: "block",
+    reason: `命令 ${executable} 不在允许白名单中`,
+    executable,
+  };
 }
 
 export const commandTools: ToolDefinition[] = [
@@ -358,15 +659,18 @@ export const commandTools: ToolDefinition[] = [
     description: "运行工作区内的命令，例如 npm run build",
     schema: z.object({
       command: z.string().min(1, "命令不能为空"),
-      confirmed: z.boolean().optional()
+      confirmed: z.boolean().optional(),
     }),
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string" },
-        confirmed: { type: "boolean", description: "仅当用户已明确确认后才传 true" }
+        confirmed: {
+          type: "boolean",
+          description: "仅当用户已明确确认后才传 true",
+        },
       },
-      required: ["command"]
+      required: ["command"],
     },
     async execute(input) {
       const policy = await getRunCommandPolicy(input.command);
@@ -376,12 +680,16 @@ export const commandTools: ToolDefinition[] = [
           command: input.command,
           reason: policy.reason,
           decision: "blocked",
-          source: "policy"
+          source: "policy",
         });
-        throw new Error(`检测到危险命令: ${input.command}\n原因: ${policy.reason}`);
+        throw new Error(
+          `检测到危险命令: ${input.command}\n原因: ${policy.reason}`,
+        );
       }
       if (policy.decision === "confirm" && !input.confirmed) {
-        throw new Error(`命令需要用户确认后才能执行: ${input.command}\n原因: ${policy.reason}`);
+        throw new Error(
+          `命令需要用户确认后才能执行: ${input.command}\n原因: ${policy.reason}`,
+        );
       }
 
       const [file, ...args] = tokenizeCommand(input.command);
@@ -389,11 +697,22 @@ export const commandTools: ToolDefinition[] = [
         throw new Error("命令不能为空");
       }
 
-      const result = await execa(file, args, {
-        cwd: process.cwd(),
-        reject: false,
-        timeout: COMMAND_TIMEOUT_MS
-      });
+      const executable = getExecutableName(file);
+      const localToolchainCommand =
+        !file.includes("/") && SAFE_TOOLCHAIN_EXECUTABLES.has(executable)
+          ? await resolveLocalToolchainCommand(executable)
+          : undefined;
+      const result = await execa(
+        localToolchainCommand?.file || file,
+        localToolchainCommand?.args
+          ? [...localToolchainCommand.args, ...args]
+          : args,
+        {
+          cwd: process.cwd(),
+          reject: false,
+          timeout: COMMAND_TIMEOUT_MS,
+        },
+      );
       if (result.failed && result.code === "ENOENT") {
         throw new Error(`命令不存在或不可执行: ${file}`);
       }
@@ -402,11 +721,11 @@ export const commandTools: ToolDefinition[] = [
           command: input.command,
           exitCode: result.exitCode,
           stdout: result.stdout,
-          stderr: result.stderr
+          stderr: result.stderr,
         },
         null,
-        2
+        2,
       );
-    }
-  })
+    },
+  }),
 ];

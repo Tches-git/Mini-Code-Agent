@@ -1,4 +1,4 @@
-import { z } from "zod";
+import type { z } from "zod";
 import type { ToolDefinition, ToolResult } from "../types/agent.js";
 
 /**
@@ -27,7 +27,6 @@ export function createTool<T extends z.ZodType>(config: {
         throw new Error(`参数校验失败: ${issues}`);
       }
       return config.execute(parsed.data);
-    }
+    },
   };
 }
-

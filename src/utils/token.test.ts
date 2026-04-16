@@ -1,16 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
+import type { ChatMessage } from "../types/agent.js";
 import {
-  estimateTokens,
   estimateMessageTokens,
+  estimateTokens,
   estimateTotalTokens,
-  trimMessages,
-  trimMessagesWithMetadata,
   isSummaryMessage,
   SUMMARY_MESSAGE_PREFIX,
+  trimMessagesWithMetadata,
 } from "./token.js";
-import type { ChatMessage } from "../types/agent.js";
 
-const msg = (role: ChatMessage["role"], content: string | null, extra?: Partial<ChatMessage>): ChatMessage => ({
+const msg = (
+  role: ChatMessage["role"],
+  content: string | null,
+  extra?: Partial<ChatMessage>,
+): ChatMessage => ({
   role,
   content,
   ...extra,
@@ -21,8 +24,8 @@ describe("estimateTokens", () => {
     expect(estimateTokens("")).toBe(0);
   });
 
-  it("estimates English text at ~0.25 per char", () => {
-    // "hello" = 5 chars * 0.25 = 1.25 → ceil → 2, max(1,2)=2
+  it("estimates English text at ~0.3 per char", () => {
+    // "hello" = 5 chars * 0.3 = 1.5 → ceil → 2, max(1,2)=2
     expect(estimateTokens("hello")).toBe(2);
   });
 
@@ -32,7 +35,7 @@ describe("estimateTokens", () => {
   });
 
   it("handles mixed text", () => {
-    // "hi你" = 2*0.25 + 1*2 = 2.5 → ceil → 3
+    // "hi你" = 2*0.3 + 1*2 = 2.6 → ceil → 3
     expect(estimateTokens("hi你")).toBe(3);
   });
 });
@@ -45,7 +48,13 @@ describe("estimateMessageTokens", () => {
 
   it("includes tool_calls tokens", () => {
     const m = msg("assistant", null, {
-      tool_calls: [{ id: "1", type: "function", function: { name: "read", arguments: '{"a":1}' } }],
+      tool_calls: [
+        {
+          id: "1",
+          type: "function",
+          function: { name: "read", arguments: '{"a":1}' },
+        },
+      ],
     });
     // 4 (overhead) + 0 (null content) + estimateTokens("read") + estimateTokens('{"a":1}') + 4
     const expected = 4 + estimateTokens("read") + estimateTokens('{"a":1}') + 4;
@@ -69,11 +78,15 @@ describe("estimateTotalTokens", () => {
 
 describe("isSummaryMessage", () => {
   it("returns true for assistant message starting with SUMMARY_MESSAGE_PREFIX", () => {
-    expect(isSummaryMessage(msg("assistant", `${SUMMARY_MESSAGE_PREFIX}内容`))).toBe(true);
+    expect(
+      isSummaryMessage(msg("assistant", `${SUMMARY_MESSAGE_PREFIX}内容`)),
+    ).toBe(true);
   });
 
   it("returns false for user message with prefix", () => {
-    expect(isSummaryMessage(msg("user", `${SUMMARY_MESSAGE_PREFIX}内容`))).toBe(false);
+    expect(isSummaryMessage(msg("user", `${SUMMARY_MESSAGE_PREFIX}内容`))).toBe(
+      false,
+    );
   });
 
   it("returns false for undefined", () => {
@@ -98,12 +111,12 @@ describe("trimMessagesWithMetadata", () => {
   it("removes oldest non-protected messages when over budget", () => {
     const msgs = [
       msg("system", "s"),
-      msg("user", longContent),   // index 1 — removable
-      msg("user", "a"),           // index 2
-      msg("user", "b"),           // index 3
-      msg("user", "c"),           // index 4
-      msg("user", "d"),           // index 5
-      msg("user", "e"),           // index 6 — last 4 protected
+      msg("user", longContent), // index 1 — removable
+      msg("user", "a"), // index 2
+      msg("user", "b"), // index 3
+      msg("user", "c"), // index 4
+      msg("user", "d"), // index 5
+      msg("user", "e"), // index 6 — last 4 protected
     ];
     const budget = estimateTotalTokens(msgs) - 1;
     const result = trimMessagesWithMetadata(msgs, budget);
@@ -146,7 +159,13 @@ describe("trimMessagesWithMetadata", () => {
 
   it("removes assistant+tool message pairs together", () => {
     const toolCallMsg = msg("assistant", null, {
-      tool_calls: [{ id: "tc1", type: "function", function: { name: "f", arguments: "{}" } }],
+      tool_calls: [
+        {
+          id: "tc1",
+          type: "function",
+          function: { name: "f", arguments: "{}" },
+        },
+      ],
     });
     const toolResultMsg = msg("tool", "result", { tool_call_id: "tc1" });
     const msgs = [

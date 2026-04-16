@@ -12,14 +12,18 @@ function splitLines(text: string): string[] {
   return text === "" ? [] : text.split("\n");
 }
 
-function buildFallbackPreview(beforeLines: string[], afterLines: string[], path?: string): string {
+function buildFallbackPreview(
+  beforeLines: string[],
+  afterLines: string[],
+  path?: string,
+): string {
   const beforeHeader = path ? `--- a/${path}` : "--- before";
   const afterHeader = path ? `+++ b/${path}` : "+++ after";
   const previewLines = [
     beforeHeader,
     ...beforeLines.slice(0, 20).map((line) => `-${line}`),
     afterHeader,
-    ...afterLines.slice(0, 20).map((line) => `+${line}`)
+    ...afterLines.slice(0, 20).map((line) => `+${line}`),
   ];
 
   if (beforeLines.length > 20 || afterLines.length > 20) {
@@ -29,13 +33,18 @@ function buildFallbackPreview(beforeLines: string[], afterLines: string[], path?
   return previewLines.join("\n");
 }
 
-function buildDiffOperations(beforeLines: string[], afterLines: string[]): DiffOp[] {
+function buildDiffOperations(
+  beforeLines: string[],
+  afterLines: string[],
+): DiffOp[] {
   const cells = beforeLines.length * afterLines.length;
   if (cells > MAX_DIFF_MATRIX_CELLS) {
     return [];
   }
 
-  const lcs = Array.from({ length: beforeLines.length + 1 }, () => new Array<number>(afterLines.length + 1).fill(0));
+  const lcs = Array.from({ length: beforeLines.length + 1 }, () =>
+    new Array<number>(afterLines.length + 1).fill(0),
+  );
 
   for (let i = beforeLines.length - 1; i >= 0; i--) {
     for (let j = afterLines.length - 1; j >= 0; j--) {
@@ -116,50 +125,86 @@ function trimMiddleWithEllipsis(text: string, maxChars: number): string {
 
 function getSharedPrefixLength(before: string, after: string): number {
   let index = 0;
-  while (index < before.length && index < after.length && before[index] === after[index]) {
+  while (
+    index < before.length &&
+    index < after.length &&
+    before[index] === after[index]
+  ) {
     index += 1;
   }
   return index;
 }
 
-function getSharedSuffixLength(before: string, after: string, prefixLength: number): number {
+function getSharedSuffixLength(
+  before: string,
+  after: string,
+  prefixLength: number,
+): number {
   let suffixLength = 0;
   const maxSuffix = Math.min(before.length, after.length) - prefixLength;
   while (
-    suffixLength < maxSuffix
-    && before[before.length - suffixLength - 1] === after[after.length - suffixLength - 1]
+    suffixLength < maxSuffix &&
+    before[before.length - suffixLength - 1] ===
+      after[after.length - suffixLength - 1]
   ) {
     suffixLength += 1;
   }
   return suffixLength;
 }
 
-function buildInlineSnippet(prefix: string, changed: string, suffix: string, openMarker: string, closeMarker: string): string {
+function buildInlineSnippet(
+  prefix: string,
+  changed: string,
+  suffix: string,
+  openMarker: string,
+  closeMarker: string,
+): string {
   const prefixSnippet = trimStartWithEllipsis(prefix, INLINE_CONTEXT_CHARS);
   const suffixSnippet = trimEndWithEllipsis(suffix, INLINE_CONTEXT_CHARS);
-  const changedSnippet = trimMiddleWithEllipsis(changed || "∅", INLINE_CHANGE_CHARS);
+  const changedSnippet = trimMiddleWithEllipsis(
+    changed || "∅",
+    INLINE_CHANGE_CHARS,
+  );
   return `${prefixSnippet}${openMarker}${changedSnippet}${closeMarker}${suffixSnippet}`;
 }
 
-function buildInlineChangeHints(beforeLine: string, afterLine: string): string[] {
+function buildInlineChangeHints(
+  beforeLine: string,
+  afterLine: string,
+): string[] {
   const prefixLength = getSharedPrefixLength(beforeLine, afterLine);
-  const suffixLength = getSharedSuffixLength(beforeLine, afterLine, prefixLength);
+  const suffixLength = getSharedSuffixLength(
+    beforeLine,
+    afterLine,
+    prefixLength,
+  );
   if (prefixLength === beforeLine.length && prefixLength === afterLine.length) {
     return [];
   }
 
   const prefix = beforeLine.slice(0, prefixLength);
-  const beforeChanged = beforeLine.slice(prefixLength, beforeLine.length - suffixLength || beforeLine.length);
-  const afterChanged = afterLine.slice(prefixLength, afterLine.length - suffixLength || afterLine.length);
-  const suffix = suffixLength > 0 ? beforeLine.slice(beforeLine.length - suffixLength) : "";
+  const beforeChanged = beforeLine.slice(
+    prefixLength,
+    beforeLine.length - suffixLength || beforeLine.length,
+  );
+  const afterChanged = afterLine.slice(
+    prefixLength,
+    afterLine.length - suffixLength || afterLine.length,
+  );
+  const suffix =
+    suffixLength > 0 ? beforeLine.slice(beforeLine.length - suffixLength) : "";
 
   return [
     `? old inline: ${buildInlineSnippet(prefix, beforeChanged, suffix, "[-", "-]")}`,
-    `? new inline: ${buildInlineSnippet(prefix, afterChanged, suffix, "{+", "+}")}`
+    `? new inline: ${buildInlineSnippet(prefix, afterChanged, suffix, "{+", "+}")}`,
   ];
 }
 
-function flushChangeHints(lines: string[], deletions: string[], insertions: string[]) {
+function flushChangeHints(
+  lines: string[],
+  deletions: string[],
+  insertions: string[],
+) {
   const pairCount = Math.min(deletions.length, insertions.length);
   for (let index = 0; index < pairCount; index++) {
     lines.push(...buildInlineChangeHints(deletions[index], insertions[index]));
@@ -204,15 +249,21 @@ function pushHunk(
   beforeStart: number,
   afterStart: number,
   beforeLength: number,
-  afterLength: number
+  afterLength: number,
 ) {
-  hunks.push(`@@ -${formatRange(beforeStart, beforeLength)} +${formatRange(afterStart, afterLength)} @@`);
+  hunks.push(
+    `@@ -${formatRange(beforeStart, beforeLength)} +${formatRange(afterStart, afterLength)} @@`,
+  );
   for (const line of formatHunkLines(hunkOps)) {
     hunks.push(line);
   }
 }
 
-function buildUnifiedDiff(beforeLines: string[], afterLines: string[], path?: string): string {
+function buildUnifiedDiff(
+  beforeLines: string[],
+  afterLines: string[],
+  path?: string,
+): string {
   const ops = buildDiffOperations(beforeLines, afterLines);
   if (ops.length === 0) {
     return buildFallbackPreview(beforeLines, afterLines, path);
@@ -233,7 +284,14 @@ function buildUnifiedDiff(beforeLines: string[], afterLines: string[], path?: st
 
   const flushHunk = () => {
     if (currentHunk.length === 0) return;
-    pushHunk(hunks, currentHunk, hunkBeforeStart, hunkAfterStart, hunkBeforeLength, hunkAfterLength);
+    pushHunk(
+      hunks,
+      currentHunk,
+      hunkBeforeStart,
+      hunkAfterStart,
+      hunkBeforeLength,
+      hunkAfterLength,
+    );
     currentHunk = [];
     hunkBeforeLength = 0;
     hunkAfterLength = 0;
@@ -287,7 +345,11 @@ function buildUnifiedDiff(beforeLines: string[], afterLines: string[], path?: st
   return hunks.join("\n");
 }
 
-export function buildDiffPreview(before: string, after: string, path?: string): string {
+export function buildDiffPreview(
+  before: string,
+  after: string,
+  path?: string,
+): string {
   if (before === after) {
     const beforeHeader = path ? `--- a/${path}` : "--- before";
     const afterHeader = path ? `+++ b/${path}` : "+++ after";

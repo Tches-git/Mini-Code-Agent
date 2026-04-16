@@ -4,26 +4,51 @@ import { execa } from "execa";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
 import { buildDiffPreview } from "../utils/diff.js";
-import { isPathInsideWorkspace, isPathOutsideWorkspace } from "../utils/path.js";
+import {
+  isPathInsideWorkspace,
+  isPathOutsideWorkspace,
+} from "../utils/path.js";
 import { createTool } from "./create-tool.js";
 
 const root = process.cwd();
 const BACKUP_DIR = path.join(root, ".backup");
 const IMPORTS_DIR = path.join(root, ".imports");
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
-const TEXTUTIL_EXTRACTION_EXTENSIONS = new Set([".doc", ".docx", ".odt", ".rtf"]);
-const OOXML_SPREADSHEET_EXTENSIONS = new Set([".xlsx", ".xlsm", ".xltx", ".xltm"]);
+const TEXTUTIL_EXTRACTION_EXTENSIONS = new Set([
+  ".doc",
+  ".docx",
+  ".odt",
+  ".rtf",
+]);
+const OOXML_SPREADSHEET_EXTENSIONS = new Set([
+  ".xlsx",
+  ".xlsm",
+  ".xltx",
+  ".xltm",
+]);
 const OPEN_DOCUMENT_SPREADSHEET_EXTENSIONS = new Set([".ods"]);
-const OOXML_PRESENTATION_EXTENSIONS = new Set([".pptx", ".pptm", ".potx", ".potm"]);
+const OOXML_PRESENTATION_EXTENSIONS = new Set([
+  ".pptx",
+  ".pptm",
+  ".potx",
+  ".potm",
+]);
 const OPEN_DOCUMENT_PRESENTATION_EXTENSIONS = new Set([".odp"]);
-const FALLBACK_TEXT_EXTRACTION_EXTENSIONS = new Set([".key", ".numbers", ".pages", ".pdf", ".ppt", ".xls"]);
+const FALLBACK_TEXT_EXTRACTION_EXTENSIONS = new Set([
+  ".key",
+  ".numbers",
+  ".pages",
+  ".pdf",
+  ".ppt",
+  ".xls",
+]);
 const TEXT_EXTRACTION_EXTENSIONS = new Set([
   ...TEXTUTIL_EXTRACTION_EXTENSIONS,
   ...OOXML_SPREADSHEET_EXTENSIONS,
   ...OPEN_DOCUMENT_SPREADSHEET_EXTENSIONS,
   ...OOXML_PRESENTATION_EXTENSIONS,
   ...OPEN_DOCUMENT_PRESENTATION_EXTENSIONS,
-  ...FALLBACK_TEXT_EXTRACTION_EXTENSIONS
+  ...FALLBACK_TEXT_EXTRACTION_EXTENSIONS,
 ]);
 const TEXT_FILE_EXTENSIONS = new Set([
   ".adoc",
@@ -51,10 +76,10 @@ const TEXT_FILE_EXTENSIONS = new Set([
   ".txt",
   ".xml",
   ".yaml",
-  ".yml"
+  ".yml",
 ]);
 const IMPORT_MODES = ["auto", "copy", "extract_text"] as const;
-type ImportMode = typeof IMPORT_MODES[number];
+type ImportMode = (typeof IMPORT_MODES)[number];
 
 type ExternalImportResult = {
   relativePath: string;
@@ -88,18 +113,25 @@ function toWorkspaceRelative(target: string): string {
 }
 
 function toDisplayPath(target: string): string {
-  return isPathInsideWorkspace(target) ? toWorkspaceRelative(path.resolve(root, target)) : normalizeSlashes(path.resolve(root, target));
+  return isPathInsideWorkspace(target)
+    ? toWorkspaceRelative(path.resolve(root, target))
+    : normalizeSlashes(path.resolve(root, target));
 }
 
 function toDiffLabel(displayPath: string): string {
   return displayPath.startsWith("/") ? displayPath.slice(1) : displayPath;
 }
 
-function buildDiffEntry(displayPath: string, summary: string, before: string, after: string) {
+function buildDiffEntry(
+  displayPath: string,
+  summary: string,
+  before: string,
+  after: string,
+) {
   return {
     path: displayPath,
     summary,
-    diff: buildDiffPreview(before, after, toDiffLabel(displayPath))
+    diff: buildDiffPreview(before, after, toDiffLabel(displayPath)),
   };
 }
 
@@ -107,11 +139,16 @@ function getExtension(sourcePath: string): string {
   return path.extname(sourcePath).toLowerCase();
 }
 
-function normalizeImportMode(sourcePath: string, mode: ImportMode): Exclude<ImportMode, "auto"> {
+function normalizeImportMode(
+  sourcePath: string,
+  mode: ImportMode,
+): Exclude<ImportMode, "auto"> {
   if (mode !== "auto") {
     return mode;
   }
-  return TEXT_EXTRACTION_EXTENSIONS.has(getExtension(sourcePath)) ? "extract_text" : "copy";
+  return TEXT_EXTRACTION_EXTENSIONS.has(getExtension(sourcePath))
+    ? "extract_text"
+    : "copy";
 }
 
 function isReadableTextFile(sourcePath: string): boolean {
@@ -119,7 +156,10 @@ function isReadableTextFile(sourcePath: string): boolean {
 }
 
 function sanitizeFileName(fileName: string): string {
-  return fileName.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "imported-file";
+  return (
+    fileName.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ||
+    "imported-file"
+  );
 }
 
 function getBackupRelativePath(filePath: string): string {
@@ -128,7 +168,10 @@ function getBackupRelativePath(filePath: string): string {
     return path.relative(root, resolvedPath);
   }
 
-  const parts = resolvedPath.split(path.sep).filter(Boolean).map(sanitizeFileName);
+  const parts = resolvedPath
+    .split(path.sep)
+    .filter(Boolean)
+    .map(sanitizeFileName);
   return path.join("__external__", ...parts);
 }
 
@@ -162,15 +205,20 @@ async function findAvailablePath(target: string): Promise<string> {
 async function resolveImportDestination(
   sourcePath: string,
   destinationPath: string | undefined,
-  mode: Exclude<ImportMode, "auto">
+  mode: Exclude<ImportMode, "auto">,
 ): Promise<string> {
-  const sourceName = sanitizeFileName(path.basename(sourcePath, path.extname(sourcePath)));
-  const targetExt = mode === "extract_text" ? ".txt" : path.extname(sourcePath) || ".bin";
+  const sourceName = sanitizeFileName(
+    path.basename(sourcePath, path.extname(sourcePath)),
+  );
+  const targetExt =
+    mode === "extract_text" ? ".txt" : path.extname(sourcePath) || ".bin";
 
   if (destinationPath) {
     const resolved = resolveWorkspacePath(destinationPath);
     if (await pathExists(resolved)) {
-      throw new Error(`目标文件已存在，请更换 destinationPath: ${destinationPath}`);
+      throw new Error(
+        `目标文件已存在，请更换 destinationPath: ${destinationPath}`,
+      );
     }
     return resolved;
   }
@@ -186,14 +234,20 @@ async function ensureReadableExternalFile(sourcePath: string): Promise<void> {
     throw new Error(`仅支持导入文件，当前不是普通文件: ${sourcePath}`);
   }
   if (stats.size > MAX_IMPORT_BYTES) {
-    throw new Error(`文件过大 (${stats.size} bytes)，当前最多支持导入 ${MAX_IMPORT_BYTES} bytes`);
+    throw new Error(
+      `文件过大 (${stats.size} bytes)，当前最多支持导入 ${MAX_IMPORT_BYTES} bytes`,
+    );
   }
 }
 
 function decodeXmlEntities(text: string): string {
   return text
-    .replace(/&#x([0-9a-f]+);/gi, (_, value: string) => String.fromCodePoint(Number.parseInt(value, 16)))
-    .replace(/&#(\d+);/g, (_, value: string) => String.fromCodePoint(Number.parseInt(value, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, value: string) =>
+      String.fromCodePoint(Number.parseInt(value, 16)),
+    )
+    .replace(/&#(\d+);/g, (_, value: string) =>
+      String.fromCodePoint(Number.parseInt(value, 10)),
+    )
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&gt;/g, ">")
@@ -217,17 +271,23 @@ function stripXmlTags(xml: string): string {
     .replace(/<text:tab\s*\/?>/g, "\t")
     .replace(/<br\s*\/?>/g, "\n");
   const withoutTags = withLineBreaks.replace(/<[^>]+>/g, " ");
-  return cleanupExtractedText(decodeXmlEntities(withoutTags).replace(/[ \t]{2,}/g, " "));
+  return cleanupExtractedText(
+    decodeXmlEntities(withoutTags).replace(/[ \t]{2,}/g, " "),
+  );
 }
 
 function extractXmlTextRuns(xml: string): string[] {
-  return [...xml.matchAll(/<(?:[\w-]+:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w-]+:)?t>/g)]
+  return [
+    ...xml.matchAll(/<(?:[\w-]+:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w-]+:)?t>/g),
+  ]
     .map((match) => cleanupExtractedText(decodeXmlEntities(match[1])))
     .filter(Boolean);
 }
 
 function getXmlTagText(xml: string, tagName: string): string {
-  const regex = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`);
+  const regex = new RegExp(
+    `<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tagName}>`,
+  );
   const match = xml.match(regex);
   return match ? cleanupExtractedText(decodeXmlEntities(match[1])) : "";
 }
@@ -241,11 +301,15 @@ function columnLettersToIndex(value: string): number {
 }
 
 async function extractTextWithTextutil(sourcePath: string): Promise<string> {
-  const result = await execa("textutil", ["-convert", "txt", "-stdout", sourcePath], {
-    cwd: root,
-    reject: false,
-    timeout: 60_000
-  });
+  const result = await execa(
+    "textutil",
+    ["-convert", "txt", "-stdout", sourcePath],
+    {
+      cwd: root,
+      reject: false,
+      timeout: 60_000,
+    },
+  );
   if (result.failed || result.exitCode !== 0) {
     throw new Error(result.stderr || `无法提取文档文本: ${sourcePath}`);
   }
@@ -253,13 +317,19 @@ async function extractTextWithTextutil(sourcePath: string): Promise<string> {
 }
 
 async function extractTextWithMdls(sourcePath: string): Promise<string> {
-  const result = await execa("mdls", ["-name", "kMDItemTextContent", "-raw", sourcePath], {
-    cwd: root,
-    reject: false,
-    timeout: 60_000
-  });
+  const result = await execa(
+    "mdls",
+    ["-name", "kMDItemTextContent", "-raw", sourcePath],
+    {
+      cwd: root,
+      reject: false,
+      timeout: 60_000,
+    },
+  );
   if (result.failed || result.exitCode !== 0) {
-    throw new Error(result.stderr || `无法读取 Spotlight 文本内容: ${sourcePath}`);
+    throw new Error(
+      result.stderr || `无法读取 Spotlight 文本内容: ${sourcePath}`,
+    );
   }
   const content = cleanupExtractedText(result.stdout);
   if (!content || content === "(null)" || content === "null") {
@@ -272,10 +342,12 @@ async function extractTextWithStrings(sourcePath: string): Promise<string> {
   const result = await execa("strings", ["-n", "4", sourcePath], {
     cwd: root,
     reject: false,
-    timeout: 60_000
+    timeout: 60_000,
   });
   if (result.failed || result.exitCode !== 0) {
-    throw new Error(result.stderr || `无法通过 strings 提取文本: ${sourcePath}`);
+    throw new Error(
+      result.stderr || `无法通过 strings 提取文本: ${sourcePath}`,
+    );
   }
   const lines = result.stdout
     .split(/\r?\n/)
@@ -292,19 +364,25 @@ async function listZipEntries(sourcePath: string): Promise<string[]> {
   const result = await execa("unzip", ["-Z1", sourcePath], {
     cwd: root,
     reject: false,
-    timeout: 60_000
+    timeout: 60_000,
   });
   if (result.failed || result.exitCode !== 0) {
     throw new Error(result.stderr || `无法读取压缩包目录: ${sourcePath}`);
   }
-  return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
-async function readZipEntry(sourcePath: string, entryPath: string): Promise<string> {
+async function readZipEntry(
+  sourcePath: string,
+  entryPath: string,
+): Promise<string> {
   const result = await execa("unzip", ["-p", sourcePath, entryPath], {
     cwd: root,
     reject: false,
-    timeout: 60_000
+    timeout: 60_000,
   });
   if (result.failed || result.exitCode !== 0) {
     throw new Error(result.stderr || `无法读取压缩包内文件: ${entryPath}`);
@@ -312,7 +390,10 @@ async function readZipEntry(sourcePath: string, entryPath: string): Promise<stri
   return result.stdout;
 }
 
-async function readOptionalZipEntry(sourcePath: string, entryPath: string): Promise<string | undefined> {
+async function readOptionalZipEntry(
+  sourcePath: string,
+  entryPath: string,
+): Promise<string | undefined> {
   try {
     return await readZipEntry(sourcePath, entryPath);
   } catch {
@@ -330,7 +411,11 @@ function parseSharedStrings(xml: string): string[] {
   });
 }
 
-function parseXlsxCellValue(cellXml: string, attrs: string, sharedStrings: string[]): string {
+function parseXlsxCellValue(
+  cellXml: string,
+  attrs: string,
+  sharedStrings: string[],
+): string {
   const typeMatch = attrs.match(/\bt="([^"]+)"/);
   const type = typeMatch?.[1];
 
@@ -359,7 +444,10 @@ function parseXlsxCellValue(cellXml: string, attrs: string, sharedStrings: strin
   return cleanupExtractedText(extractXmlTextRuns(cellXml).join(""));
 }
 
-function parseXlsxSheetRows(sheetXml: string, sharedStrings: string[]): string[] {
+function parseXlsxSheetRows(
+  sheetXml: string,
+  sharedStrings: string[],
+): string[] {
   const rows: string[] = [];
   for (const rowMatch of sheetXml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
     const rowXml = rowMatch[1];
@@ -370,7 +458,9 @@ function parseXlsxSheetRows(sheetXml: string, sharedStrings: string[]): string[]
       const attrs = cellMatch[1];
       const cellXml = cellMatch[2];
       const refMatch = attrs.match(/\br="([A-Z]+)\d+"/);
-      const cellIndex = refMatch ? columnLettersToIndex(refMatch[1]) : lastIndex + 1;
+      const cellIndex = refMatch
+        ? columnLettersToIndex(refMatch[1])
+        : lastIndex + 1;
       while (cells.length < cellIndex) {
         cells.push("");
       }
@@ -389,18 +479,29 @@ function parseXlsxSheetRows(sheetXml: string, sharedStrings: string[]): string[]
   return rows;
 }
 
-async function extractSpreadsheetTextFromXlsx(sourcePath: string): Promise<string> {
+async function extractSpreadsheetTextFromXlsx(
+  sourcePath: string,
+): Promise<string> {
   const entries = await listZipEntries(sourcePath);
-  const sheetEntries = entries.filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/.test(entry)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const sheetEntries = entries
+    .filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/.test(entry))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   if (sheetEntries.length === 0) {
     throw new Error(`未在 Excel 文件中找到工作表: ${sourcePath}`);
   }
 
   const workbookXml = await readOptionalZipEntry(sourcePath, "xl/workbook.xml");
-  const sharedStringsXml = await readOptionalZipEntry(sourcePath, "xl/sharedStrings.xml");
-  const sharedStrings = sharedStringsXml ? parseSharedStrings(sharedStringsXml) : [];
+  const sharedStringsXml = await readOptionalZipEntry(
+    sourcePath,
+    "xl/sharedStrings.xml",
+  );
+  const sharedStrings = sharedStringsXml
+    ? parseSharedStrings(sharedStringsXml)
+    : [];
   const sheetNames = workbookXml
-    ? [...workbookXml.matchAll(/<sheet\b[^>]*name="([^"]+)"/g)].map((match) => decodeXmlEntities(match[1]))
+    ? [...workbookXml.matchAll(/<sheet\b[^>]*name="([^"]+)"/g)].map((match) =>
+        decodeXmlEntities(match[1]),
+      )
     : [];
 
   const sections: string[] = [];
@@ -421,7 +522,9 @@ async function extractSpreadsheetTextFromXlsx(sourcePath: string): Promise<strin
 }
 
 function extractOpenDocumentCellText(cellXml: string): string {
-  const paragraphs = [...cellXml.matchAll(/<text:p\b[^>]*>([\s\S]*?)<\/text:p>/g)]
+  const paragraphs = [
+    ...cellXml.matchAll(/<text:p\b[^>]*>([\s\S]*?)<\/text:p>/g),
+  ]
     .map((match) => stripXmlTags(match[1]))
     .filter(Boolean);
   if (paragraphs.length > 0) {
@@ -430,9 +533,13 @@ function extractOpenDocumentCellText(cellXml: string): string {
   return stripXmlTags(cellXml);
 }
 
-async function extractSpreadsheetTextFromOds(sourcePath: string): Promise<string> {
+async function extractSpreadsheetTextFromOds(
+  sourcePath: string,
+): Promise<string> {
   const contentXml = await readZipEntry(sourcePath, "content.xml");
-  const tables = [...contentXml.matchAll(/<table:table\b([^>]*)>([\s\S]*?)<\/table:table>/g)];
+  const tables = [
+    ...contentXml.matchAll(/<table:table\b([^>]*)>([\s\S]*?)<\/table:table>/g),
+  ];
   const sections: string[] = [];
 
   for (const tableMatch of tables) {
@@ -442,14 +549,23 @@ async function extractSpreadsheetTextFromOds(sourcePath: string): Promise<string
     const title = decodeXmlEntities(nameMatch?.[1] || "Sheet");
     const rows: string[] = [];
 
-    for (const rowMatch of tableXml.matchAll(/<table:table-row\b[^>]*>([\s\S]*?)<\/table:table-row>/g)) {
+    for (const rowMatch of tableXml.matchAll(
+      /<table:table-row\b[^>]*>([\s\S]*?)<\/table:table-row>/g,
+    )) {
       const rowXml = rowMatch[1];
       const cells: string[] = [];
-      for (const cellMatch of rowXml.matchAll(/<table:table-cell\b([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table-cell>)/g)) {
+      for (const cellMatch of rowXml.matchAll(
+        /<table:table-cell\b([^>]*?)(?:\/>|>([\s\S]*?)<\/table:table-cell>)/g,
+      )) {
         const cellAttrs = cellMatch[1];
         const cellBody = cellMatch[2] || "";
-        const repeatMatch = cellAttrs.match(/table:number-columns-repeated="(\d+)"/);
-        const repeatCount = Math.min(Number.parseInt(repeatMatch?.[1] || "1", 10) || 1, 20);
+        const repeatMatch = cellAttrs.match(
+          /table:number-columns-repeated="(\d+)"/,
+        );
+        const repeatCount = Math.min(
+          Number.parseInt(repeatMatch?.[1] || "1", 10) || 1,
+          20,
+        );
         const value = extractOpenDocumentCellText(cellBody);
         for (let index = 0; index < repeatCount; index++) {
           cells.push(index === 0 ? value : "");
@@ -475,9 +591,13 @@ async function extractSpreadsheetTextFromOds(sourcePath: string): Promise<string
   return content;
 }
 
-async function extractPresentationTextFromPptx(sourcePath: string): Promise<string> {
+async function extractPresentationTextFromPptx(
+  sourcePath: string,
+): Promise<string> {
   const entries = await listZipEntries(sourcePath);
-  const slideEntries = entries.filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const slideEntries = entries
+    .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/.test(entry))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   if (slideEntries.length === 0) {
     throw new Error(`未在演示文稿中找到幻灯片: ${sourcePath}`);
   }
@@ -498,21 +618,29 @@ async function extractPresentationTextFromPptx(sourcePath: string): Promise<stri
   return content;
 }
 
-async function extractPresentationTextFromOdp(sourcePath: string): Promise<string> {
+async function extractPresentationTextFromOdp(
+  sourcePath: string,
+): Promise<string> {
   const contentXml = await readZipEntry(sourcePath, "content.xml");
-  const pages = [...contentXml.matchAll(/<draw:page\b([^>]*)>([\s\S]*?)<\/draw:page>/g)];
-  const sections = pages.map((pageMatch, index) => {
-    const attrs = pageMatch[1];
-    const pageXml = pageMatch[2];
-    const nameMatch = attrs.match(/draw:name="([^"]+)"/);
-    const title = decodeXmlEntities(nameMatch?.[1] || `Slide ${index + 1}`);
-    const text = stripXmlTags(pageXml);
-    return text ? `## ${title}\n${text}` : "";
-  }).filter(Boolean);
+  const pages = [
+    ...contentXml.matchAll(/<draw:page\b([^>]*)>([\s\S]*?)<\/draw:page>/g),
+  ];
+  const sections = pages
+    .map((pageMatch, index) => {
+      const attrs = pageMatch[1];
+      const pageXml = pageMatch[2];
+      const nameMatch = attrs.match(/draw:name="([^"]+)"/);
+      const title = decodeXmlEntities(nameMatch?.[1] || `Slide ${index + 1}`);
+      const text = stripXmlTags(pageXml);
+      return text ? `## ${title}\n${text}` : "";
+    })
+    .filter(Boolean);
 
   const content = cleanupExtractedText(sections.join("\n\n"));
   if (!content) {
-    throw new Error(`未从 OpenDocument 演示文稿中提取到可读文本: ${sourcePath}`);
+    throw new Error(
+      `未从 OpenDocument 演示文稿中提取到可读文本: ${sourcePath}`,
+    );
   }
   return content;
 }
@@ -522,23 +650,44 @@ async function extractTextContent(sourcePath: string): Promise<string> {
   const strategies: Array<{ name: string; run: () => Promise<string> }> = [];
 
   if (TEXTUTIL_EXTRACTION_EXTENSIONS.has(extension)) {
-    strategies.push({ name: "textutil", run: () => extractTextWithTextutil(sourcePath) });
+    strategies.push({
+      name: "textutil",
+      run: () => extractTextWithTextutil(sourcePath),
+    });
   }
   if (OOXML_SPREADSHEET_EXTENSIONS.has(extension)) {
-    strategies.push({ name: "excel-xml", run: () => extractSpreadsheetTextFromXlsx(sourcePath) });
+    strategies.push({
+      name: "excel-xml",
+      run: () => extractSpreadsheetTextFromXlsx(sourcePath),
+    });
   }
   if (OPEN_DOCUMENT_SPREADSHEET_EXTENSIONS.has(extension)) {
-    strategies.push({ name: "ods-xml", run: () => extractSpreadsheetTextFromOds(sourcePath) });
+    strategies.push({
+      name: "ods-xml",
+      run: () => extractSpreadsheetTextFromOds(sourcePath),
+    });
   }
   if (OOXML_PRESENTATION_EXTENSIONS.has(extension)) {
-    strategies.push({ name: "pptx-xml", run: () => extractPresentationTextFromPptx(sourcePath) });
+    strategies.push({
+      name: "pptx-xml",
+      run: () => extractPresentationTextFromPptx(sourcePath),
+    });
   }
   if (OPEN_DOCUMENT_PRESENTATION_EXTENSIONS.has(extension)) {
-    strategies.push({ name: "odp-xml", run: () => extractPresentationTextFromOdp(sourcePath) });
+    strategies.push({
+      name: "odp-xml",
+      run: () => extractPresentationTextFromOdp(sourcePath),
+    });
   }
   if (FALLBACK_TEXT_EXTRACTION_EXTENSIONS.has(extension)) {
-    strategies.push({ name: "spotlight", run: () => extractTextWithMdls(sourcePath) });
-    strategies.push({ name: "strings", run: () => extractTextWithStrings(sourcePath) });
+    strategies.push({
+      name: "spotlight",
+      run: () => extractTextWithMdls(sourcePath),
+    });
+    strategies.push({
+      name: "strings",
+      run: () => extractTextWithStrings(sourcePath),
+    });
   }
 
   if (strategies.length === 0) {
@@ -554,7 +703,9 @@ async function extractTextContent(sourcePath: string): Promise<string> {
       }
       errors.push(`${strategy.name}: 未提取到内容`);
     } catch (error) {
-      errors.push(`${strategy.name}: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push(
+        `${strategy.name}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
 
@@ -568,7 +719,9 @@ async function importExternalFile(options: {
 }): Promise<ExternalImportResult> {
   const resolvedSourcePath = path.resolve(root, options.sourcePath);
   if (isPathInsideWorkspace(resolvedSourcePath)) {
-    throw new Error(`文件已位于工作区内，请直接读取: ${toWorkspaceRelative(resolvedSourcePath)}`);
+    throw new Error(
+      `文件已位于工作区内，请直接读取: ${toWorkspaceRelative(resolvedSourcePath)}`,
+    );
   }
 
   await ensureReadableExternalFile(resolvedSourcePath);
@@ -577,7 +730,7 @@ async function importExternalFile(options: {
   const resolvedDestinationPath = await resolveImportDestination(
     resolvedSourcePath,
     options.destinationPath,
-    normalizedMode
+    normalizedMode,
   );
 
   await fs.mkdir(path.dirname(resolvedDestinationPath), { recursive: true });
@@ -588,7 +741,7 @@ async function importExternalFile(options: {
     return {
       relativePath: toWorkspaceRelative(resolvedDestinationPath),
       content,
-      summary: `已打开并提取文本: ${path.basename(resolvedSourcePath)}`
+      summary: `已打开并提取文本: ${path.basename(resolvedSourcePath)}`,
     };
   }
 
@@ -598,14 +751,14 @@ async function importExternalFile(options: {
     return {
       relativePath: toWorkspaceRelative(resolvedDestinationPath),
       content,
-      summary: `已打开文本文件: ${path.basename(resolvedSourcePath)}`
+      summary: `已打开文本文件: ${path.basename(resolvedSourcePath)}`,
     };
   }
 
   await fs.copyFile(resolvedSourcePath, resolvedDestinationPath);
   return {
     relativePath: toWorkspaceRelative(resolvedDestinationPath),
-    summary: `已打开外部文件: ${path.basename(resolvedSourcePath)}`
+    summary: `已打开外部文件: ${path.basename(resolvedSourcePath)}`,
   };
 }
 
@@ -629,16 +782,57 @@ async function backupFile(filePath: string): Promise<void> {
   await fs.copyFile(filePath, backupPath);
 }
 
-const pathSchema = z.object({ path: z.string(), confirmed: z.boolean().optional() });
-const pathContentSchema = z.object({ path: z.string(), content: z.string(), confirmed: z.boolean().optional() });
-const insertSchema = z.object({ path: z.string(), anchorText: z.string(), content: z.string(), confirmed: z.boolean().optional() });
-const replaceSchema = z.object({ path: z.string(), oldText: z.string(), newText: z.string(), confirmed: z.boolean().optional() });
+const pathSchema = z.object({
+  path: z.string(),
+  confirmed: z.boolean().optional(),
+});
+const pathContentSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  confirmed: z.boolean().optional(),
+});
+const insertSchema = z.object({
+  path: z.string(),
+  anchorText: z.string(),
+  content: z.string(),
+  confirmed: z.boolean().optional(),
+});
+const replaceSchema = z.object({
+  path: z.string(),
+  oldText: z.string(),
+  newText: z.string(),
+  confirmed: z.boolean().optional(),
+});
 const importSchema = z.object({
   sourcePath: z.string().min(1, "sourcePath 不能为空"),
   destinationPath: z.string().optional(),
   mode: z.enum(IMPORT_MODES).optional(),
-  confirmed: z.boolean().optional()
+  confirmed: z.boolean().optional(),
 });
+
+export {
+  cleanupExtractedText,
+  columnLettersToIndex,
+  decodeXmlEntities,
+  extractOpenDocumentCellText,
+  extractXmlTextRuns,
+  getBackupRelativePath,
+  getExtension,
+  getXmlTagText,
+  isReadableTextFile,
+  normalizeImportMode,
+  normalizeSlashes,
+  parseSharedStrings,
+  parseXlsxCellValue,
+  parseXlsxSheetRows,
+  resolveAccessiblePath,
+  resolveWorkspacePath,
+  sanitizeFileName,
+  stripXmlTags,
+  toDiffLabel,
+  toDisplayPath,
+  toWorkspaceRelative,
+};
 
 export const fileTools: ToolDefinition[] = [
   createTool({
@@ -648,7 +842,7 @@ export const fileTools: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" }, confirmed: { type: "boolean" } },
-      required: ["path"]
+      required: ["path"],
     },
     async execute(input) {
       const target = resolveAccessiblePath(input.path, input.confirmed);
@@ -656,12 +850,12 @@ export const fileTools: ToolDefinition[] = [
       return JSON.stringify(
         entries.map((entry) => ({
           name: entry.name,
-          type: entry.isDirectory() ? "dir" : "file"
+          type: entry.isDirectory() ? "dir" : "file",
         })),
         null,
-        2
+        2,
       );
-    }
+    },
   }),
   createTool({
     name: "read_file",
@@ -670,26 +864,40 @@ export const fileTools: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: { path: { type: "string" }, confirmed: { type: "boolean" } },
-      required: ["path"]
+      required: ["path"],
     },
     async execute(input) {
       const target = resolveAccessiblePath(input.path, input.confirmed);
       return await fs.readFile(target, "utf8");
-    }
+    },
   }),
   createTool({
     name: "import_external_file",
-    description: "在用户明确要求分析工作区外本地文件时，先把文件安全打开到工作区缓存中；对 Office/OpenDocument/PDF 等常见格式尽量自动提取为文本",
+    description:
+      "在用户明确要求分析工作区外本地文件时，先把文件安全打开到工作区缓存中；对 Office/OpenDocument/PDF 等常见格式尽量自动提取为文本",
     schema: importSchema,
     inputSchema: {
       type: "object",
       properties: {
-        sourcePath: { type: "string", description: "工作区外文件路径，可以是绝对路径" },
-        destinationPath: { type: "string", description: "可选，缓存到工作区内的目标路径" },
-        mode: { type: "string", enum: [...IMPORT_MODES], description: "auto=常见文档自动提取文本，其它文件默认复制" },
-        confirmed: { type: "boolean", description: "仅当用户已明确确认打开工作区外文件时才传 true" }
+        sourcePath: {
+          type: "string",
+          description: "工作区外文件路径，可以是绝对路径",
+        },
+        destinationPath: {
+          type: "string",
+          description: "可选，缓存到工作区内的目标路径",
+        },
+        mode: {
+          type: "string",
+          enum: [...IMPORT_MODES],
+          description: "auto=常见文档自动提取文本，其它文件默认复制",
+        },
+        confirmed: {
+          type: "boolean",
+          description: "仅当用户已明确确认打开工作区外文件时才传 true",
+        },
       },
-      required: ["sourcePath"]
+      required: ["sourcePath"],
     },
     async execute(input) {
       if (!input.confirmed) {
@@ -699,22 +907,26 @@ export const fileTools: ToolDefinition[] = [
       const result = await importExternalFile({
         sourcePath: input.sourcePath,
         destinationPath: input.destinationPath,
-        mode: input.mode || "auto"
+        mode: input.mode || "auto",
       });
 
       const preview = result.content
         ? buildDiffPreview("", result.content, toDiffLabel(result.relativePath))
-        : buildDiffPreview("", `[binary import] ${input.sourcePath}\n`, toDiffLabel(result.relativePath));
+        : buildDiffPreview(
+            "",
+            `[binary import] ${input.sourcePath}\n`,
+            toDiffLabel(result.relativePath),
+          );
 
       return {
         message: `${result.summary}\n缓存路径: ${result.relativePath}${result.content ? "\n现在可以继续读取该文本文件做分析。" : "\n已保留原始文件副本；若需要分析内容，请先转成可读文本格式。"}`,
         diff: {
           path: result.relativePath,
           summary: result.summary,
-          diff: preview
-        }
+          diff: preview,
+        },
       };
-    }
+    },
   }),
   createTool({
     name: "create_file",
@@ -722,8 +934,12 @@ export const fileTools: ToolDefinition[] = [
     schema: pathContentSchema,
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" }, content: { type: "string" }, confirmed: { type: "boolean" } },
-      required: ["path", "content"]
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+        confirmed: { type: "boolean" },
+      },
+      required: ["path", "content"],
     },
     async execute(input) {
       const target = resolveAccessiblePath(input.path, input.confirmed);
@@ -736,10 +952,10 @@ export const fileTools: ToolDefinition[] = [
         await fs.writeFile(target, input.content, "utf8");
         return {
           message: `已创建 ${displayPath}`,
-          diff: buildDiffEntry(displayPath, "新建文件", "", input.content)
+          diff: buildDiffEntry(displayPath, "新建文件", "", input.content),
         };
       }
-    }
+    },
   }),
   createTool({
     name: "write_file",
@@ -747,22 +963,28 @@ export const fileTools: ToolDefinition[] = [
     schema: pathContentSchema,
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" }, content: { type: "string" }, confirmed: { type: "boolean" } },
-      required: ["path", "content"]
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+        confirmed: { type: "boolean" },
+      },
+      required: ["path", "content"],
     },
     async execute(input) {
       const target = resolveAccessiblePath(input.path, input.confirmed);
       const displayPath = toDisplayPath(target);
       let before = "";
-      try { before = await fs.readFile(target, "utf8"); } catch {}
+      try {
+        before = await fs.readFile(target, "utf8");
+      } catch {}
       await backupFile(target);
       await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.writeFile(target, input.content, "utf8");
       return {
         message: `已写入 ${displayPath}`,
-        diff: buildDiffEntry(displayPath, "整文件写入", before, input.content)
+        diff: buildDiffEntry(displayPath, "整文件写入", before, input.content),
       };
-    }
+    },
   }),
   createTool({
     name: "append_text",
@@ -770,8 +992,12 @@ export const fileTools: ToolDefinition[] = [
     schema: pathContentSchema,
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" }, content: { type: "string" }, confirmed: { type: "boolean" } },
-      required: ["path", "content"]
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+        confirmed: { type: "boolean" },
+      },
+      required: ["path", "content"],
     },
     async execute(input) {
       const target = resolveAccessiblePath(input.path, input.confirmed);
@@ -782,9 +1008,9 @@ export const fileTools: ToolDefinition[] = [
       const after = before + input.content;
       return {
         message: `已追加内容到 ${displayPath}`,
-        diff: buildDiffEntry(displayPath, "末尾追加", before, after)
+        diff: buildDiffEntry(displayPath, "末尾追加", before, after),
       };
-    }
+    },
   }),
   createTool({
     name: "insert_after",
@@ -792,8 +1018,13 @@ export const fileTools: ToolDefinition[] = [
     schema: insertSchema,
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" }, anchorText: { type: "string" }, content: { type: "string" }, confirmed: { type: "boolean" } },
-      required: ["path", "anchorText", "content"]
+      properties: {
+        path: { type: "string" },
+        anchorText: { type: "string" },
+        content: { type: "string" },
+        confirmed: { type: "boolean" },
+      },
+      required: ["path", "anchorText", "content"],
     },
     async execute(input) {
       const target = resolveAccessiblePath(input.path, input.confirmed);
@@ -803,13 +1034,16 @@ export const fileTools: ToolDefinition[] = [
         throw new Error(`锚点文本未找到: ${displayPath}`);
       }
       await backupFile(target);
-      const updated = source.replace(input.anchorText, `${input.anchorText}${input.content}`);
+      const updated = source.replace(
+        input.anchorText,
+        `${input.anchorText}${input.content}`,
+      );
       await fs.writeFile(target, updated, "utf8");
       return {
         message: `已在锚点后插入内容: ${displayPath}`,
-        diff: buildDiffEntry(displayPath, "锚点插入", source, updated)
+        diff: buildDiffEntry(displayPath, "锚点插入", source, updated),
       };
-    }
+    },
   }),
   createTool({
     name: "replace_text",
@@ -817,8 +1051,13 @@ export const fileTools: ToolDefinition[] = [
     schema: replaceSchema,
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, confirmed: { type: "boolean" } },
-      required: ["path", "oldText", "newText"]
+      properties: {
+        path: { type: "string" },
+        oldText: { type: "string" },
+        newText: { type: "string" },
+        confirmed: { type: "boolean" },
+      },
+      required: ["path", "oldText", "newText"],
     },
     async execute(input) {
       const target = resolveAccessiblePath(input.path, input.confirmed);
@@ -832,8 +1071,8 @@ export const fileTools: ToolDefinition[] = [
       await fs.writeFile(target, updated, "utf8");
       return {
         message: `已完成局部替换: ${displayPath}`,
-        diff: buildDiffEntry(displayPath, "局部替换", content, updated)
+        diff: buildDiffEntry(displayPath, "局部替换", content, updated),
       };
-    }
-  })
+    },
+  }),
 ];

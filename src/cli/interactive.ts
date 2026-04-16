@@ -1,30 +1,33 @@
-import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import * as readline from "node:readline/promises";
 import chalk from "chalk";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
-import { parseApprovalLogQueryText, printApprovalLog } from "./approval-log.js";
-import type { ApprovalRequest } from "../types/agent.js";
+import { listSessions } from "../agent/session.js";
+import type { AgentEvent, ApprovalRequest } from "../types/agent.js";
 import {
-  logBanner,
   logAssistant,
-  logToolCall,
-  logToolResult,
-  logToolError,
+  logAutoFix,
   logAutoValidate,
   logAutoValidateSkipped,
-  logAutoFix,
-  logFileModified,
+  logBanner,
   logContextTrimmed,
   logDiffHeader,
   logDiffLine,
+  logFileModified,
+  logToolCall,
+  logToolError,
+  logToolResult,
   Spinner,
 } from "../utils/logger.js";
+import { parseApprovalLogQueryText, printApprovalLog } from "./approval-log.js";
 
 const SLASH_COMMANDS = {
   "/exit": "退出交互模式",
   "/clear": "清空对话上下文，开始新会话",
   "/help": "显示可用命令列表",
   "/approvals": "查看审批记录，可用 decision:/action:/path:/after: 等过滤",
+  "/sessions": "查看可恢复的历史会话",
+  "/resume <id>": "恢复指定会话 ID 的上下文",
 };
 
 function getSlashCommandName(input: string): string | null {
@@ -32,7 +35,7 @@ function getSlashCommandName(input: string): string | null {
     return null;
   }
 
-  const commandName = input.split(/\s+/, 1)[0] || null;
+  const commandName = /^\/\S+/.exec(input)?.[0] ?? null;
   if (!commandName) {
     return null;
   }
@@ -51,7 +54,7 @@ function printHelp() {
   console.log();
 }
 
-function handleEvent(event: any, spinner: Spinner) {
+function handleEvent(event: AgentEvent, spinner: Spinner) {
   switch (event.type) {
     case "thinking":
       spinner.start("思考中…");
@@ -93,14 +96,20 @@ function handleEvent(event: any, spinner: Spinner) {
   }
 }
 
-function describeApprovalRequest(request: ApprovalRequest): { title: string; primary: string; detailLines: string[]; promptLabel: string; resultLabel: string } {
+function describeApprovalRequest(request: ApprovalRequest): {
+  title: string;
+  primary: string;
+  detailLines: string[];
+  promptLabel: string;
+  resultLabel: string;
+} {
   if (request.kind === "command") {
     return {
       title: "需要确认的命令",
       primary: request.command,
       detailLines: [`原因: ${request.reason}`],
       promptLabel: "允许执行?",
-      resultLabel: "执行"
+      resultLabel: "执行",
     };
   }
 
@@ -111,41 +120,54 @@ function describeApprovalRequest(request: ApprovalRequest): { title: string; pri
       detailLines: [
         `打开后缓存到: ${request.destinationPath}`,
         `模式: ${request.mode === "extract_text" ? "提取文本" : "复制原文件"}`,
-        `原因: ${request.reason}`
+        `原因: ${request.reason}`,
       ],
       promptLabel: "允许打开?",
-      resultLabel: "打开"
+      resultLabel: "打开",
     };
   }
 
-  const title = request.action === "list"
-    ? "需要打开工作区外目录"
-    : request.action === "read"
-      ? "需要读取工作区外文件"
-      : request.action === "search"
-        ? "需要搜索工作区外目录"
-        : "需要修改工作区外文件";
-  const promptLabel = request.action === "list"
-    ? "允许打开目录?"
-    : request.action === "read"
-      ? "允许读取?"
-      : request.action === "search"
-        ? "允许搜索?"
-        : "允许修改?";
+  const title =
+    request.action === "list"
+      ? "需要打开工作区外目录"
+      : request.action === "read"
+        ? "需要读取工作区外文件"
+        : request.action === "search"
+          ? "需要搜索工作区外目录"
+          : "需要修改工作区外文件";
+  const promptLabel =
+    request.action === "list"
+      ? "允许打开目录?"
+      : request.action === "read"
+        ? "允许读取?"
+        : request.action === "search"
+          ? "允许搜索?"
+          : "允许修改?";
 
   return {
     title,
     primary: request.path,
     detailLines: [
       `操作: ${request.action === "list" ? "列目录" : request.action === "read" ? "读取内容" : request.action === "search" ? "搜索目录" : "写入或修改"}`,
-      `原因: ${request.reason}`
+      `原因: ${request.reason}`,
     ],
     promptLabel,
-    resultLabel: request.action === "write" ? "修改" : request.action === "search" ? "搜索" : request.action === "read" ? "读取" : "打开"
+    resultLabel:
+      request.action === "write"
+        ? "修改"
+        : request.action === "search"
+          ? "搜索"
+          : request.action === "read"
+            ? "读取"
+            : "打开",
   };
 }
 
-export async function startInteractive(options?: { autoApprove?: boolean; resume?: boolean }) {
+export async function startInteractive(options?: {
+  autoApprove?: boolean;
+  resume?: boolean;
+  resumeSessionId?: string;
+}) {
   const rl = readline.createInterface({ input, output, terminal: true });
   const spinner = new Spinner();
   const confirmAction = async (request: ApprovalRequest): Promise<boolean> => {
@@ -165,9 +187,15 @@ export async function startInteractive(options?: { autoApprove?: boolean; resume
     for (const detailLine of description.detailLines) {
       console.log(chalk.gray(`  ${detailLine}`));
     }
-    const answer = await rl.question(chalk.cyan.bold(`  ${description.promptLabel} [y/N] `));
+    const answer = await rl.question(
+      chalk.cyan.bold(`  ${description.promptLabel} [y/N] `),
+    );
     const approved = /^(y|yes)$/i.test(answer.trim());
-    console.log(approved ? chalk.green(`  ✔ 已确认${description.resultLabel}\n`) : chalk.red(`  ✖ 已拒绝${description.resultLabel}\n`));
+    console.log(
+      approved
+        ? chalk.green(`  ✔ 已确认${description.resultLabel}\n`)
+        : chalk.red(`  ✖ 已拒绝${description.resultLabel}\n`),
+    );
     return approved;
   };
 
@@ -178,10 +206,14 @@ export async function startInteractive(options?: { autoApprove?: boolean; resume
 
   logBanner();
 
-  if (options?.resume) {
-    const restored = await agent.restoreSession();
+  if (options?.resume || options?.resumeSessionId) {
+    const restored = await agent.restoreSession(options.resumeSessionId);
     if (restored) {
-      console.log(chalk.green(`  ✔ 已恢复上次会话（${agent.turnCount} 轮对话）\n`));
+      console.log(
+        chalk.green(
+          `  ✔ 已恢复${options.resumeSessionId ? `会话 ${options.resumeSessionId}` : "上次会话"}（${agent.turnCount} 轮对话）\n`,
+        ),
+      );
     } else {
       console.log(chalk.gray("  没有可恢复的会话，开始新对话\n"));
     }
@@ -190,7 +222,7 @@ export async function startInteractive(options?: { autoApprove?: boolean; resume
   const prompt = () => chalk.cyan.bold("  > ");
 
   while (true) {
-    let line;
+    let line: string | undefined;
     try {
       line = await rl.question(prompt());
     } catch {
@@ -199,6 +231,24 @@ export async function startInteractive(options?: { autoApprove?: boolean; resume
 
     const trimmed = line.trim();
     if (!trimmed) continue;
+
+    const resumeMatch = /^\/resume(?:\s+(.+))?$/.exec(trimmed);
+    if (resumeMatch) {
+      const sessionId = resumeMatch[1]?.trim() ?? "";
+      if (!sessionId) {
+        console.log(chalk.red("  用法: /resume <session-id>\n"));
+        continue;
+      }
+      const restored = await agent.restoreSession(sessionId);
+      console.log(
+        restored
+          ? chalk.green(
+              `  ✔ 已恢复会话 ${sessionId}（${agent.turnCount} 轮对话）\n`,
+            )
+          : chalk.red(`  ✖ 未找到会话 ${sessionId}\n`),
+      );
+      continue;
+    }
 
     const slashCommand = getSlashCommandName(trimmed);
 
@@ -221,9 +271,43 @@ export async function startInteractive(options?: { autoApprove?: boolean; resume
       await printApprovalLog(
         {
           ...parsed.filters,
-          limit: parsed.filters.limit || 10
+          limit: parsed.filters.limit || 10,
         },
-        parsed.options
+        parsed.options,
+      );
+      continue;
+    }
+    if (slashCommand === "/sessions") {
+      const sessions = await listSessions();
+      console.log();
+      if (sessions.length === 0) {
+        console.log(chalk.gray("  当前没有可恢复的会话。\n"));
+        continue;
+      }
+      console.log(chalk.cyan.bold("  可恢复会话"));
+      for (const session of sessions.slice(0, 10)) {
+        console.log(
+          chalk.yellow(`  ${session.id}`) +
+            chalk.gray(` (${session.updatedAt}, turns=${session.turnCount})`) +
+            chalk.white(` ${session.title}`),
+        );
+      }
+      console.log();
+      continue;
+    }
+    if (slashCommand === "/resume") {
+      const sessionId = trimmed.replace(/^\/resume\b/, "").trim();
+      if (!sessionId) {
+        console.log(chalk.red("  用法: /resume <session-id>\n"));
+        continue;
+      }
+      const restored = await agent.restoreSession(sessionId);
+      console.log(
+        restored
+          ? chalk.green(
+              `  ✔ 已恢复会话 ${sessionId}（${agent.turnCount} 轮对话）\n`,
+            )
+          : chalk.red(`  ✖ 未找到会话 ${sessionId}\n`),
       );
       continue;
     }
@@ -237,17 +321,21 @@ export async function startInteractive(options?: { autoApprove?: boolean; resume
       spinner.stop();
       if (result.diffs.length > 0) {
         console.log(chalk.cyan("\n  ─── 变更预览 ───"));
-        result.diffs.forEach((d) => {
+        for (const d of result.diffs) {
           logDiffHeader(d.path, d.summary);
-          d.diff.split("\n").forEach((l) => logDiffLine(l));
-        });
+          for (const l of d.diff.split("\n")) logDiffLine(l);
+        }
       }
       logAssistant(result.finalText);
     } catch (error) {
       spinner.stop();
-      console.log(chalk.red("\n  ✖ " +
-        (error instanceof Error ? error.message : String(error)) +
-        "\n"));
+      console.log(
+        chalk.red(
+          "\n  ✖ " +
+            (error instanceof Error ? error.message : String(error)) +
+            "\n",
+        ),
+      );
     }
   }
 

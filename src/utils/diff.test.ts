@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildDiffPreview } from "./diff.js";
 
 describe("buildDiffPreview", () => {
@@ -12,14 +12,18 @@ describe("buildDiffPreview", () => {
   it("shows all lines as additions for a new file", () => {
     const result = buildDiffPreview("", "line1\nline2\nline3");
     const lines = result.split("\n");
-    const contentLines = lines.filter((l) => l.startsWith("+") && !l.startsWith("+++"));
+    const contentLines = lines.filter(
+      (l) => l.startsWith("+") && !l.startsWith("+++"),
+    );
     expect(contentLines).toEqual(["+line1", "+line2", "+line3"]);
   });
 
   it("shows all lines as deletions when deleting all content", () => {
     const result = buildDiffPreview("line1\nline2\nline3", "");
     const lines = result.split("\n");
-    const contentLines = lines.filter((l) => l.startsWith("-") && !l.startsWith("---"));
+    const contentLines = lines.filter(
+      (l) => l.startsWith("-") && !l.startsWith("---"),
+    );
     expect(contentLines).toEqual(["-line1", "-line2", "-line3"]);
   });
 
@@ -73,7 +77,9 @@ describe("buildDiffPreview", () => {
     const after = "aaa\nbbb\nccc";
     const result = buildDiffPreview(before, after);
     expect(result).toContain("+bbb");
-    const deletions = result.split("\n").filter((l) => l.startsWith("-") && !l.startsWith("---"));
+    const deletions = result
+      .split("\n")
+      .filter((l) => l.startsWith("-") && !l.startsWith("---"));
     expect(deletions).toHaveLength(0);
   });
 

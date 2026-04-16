@@ -3,26 +3,38 @@ import type { ChatMessage } from "../types/agent.js";
 export const SUMMARY_MESSAGE_PREFIX = "[会话摘要]";
 
 export function isSummaryMessage(message: ChatMessage | undefined): boolean {
-  return Boolean(message && message.role === "assistant" && message.content?.startsWith(SUMMARY_MESSAGE_PREFIX));
+  return Boolean(
+    message &&
+      message.role === "assistant" &&
+      message.content?.startsWith(SUMMARY_MESSAGE_PREFIX),
+  );
 }
 
 /**
  * 粗略估算一条消息的 token 数。
- * 规则：英文按空格分词 ≈ 1 token/word，中文每字 ≈ 2 token，
+ * 规则：英文字符按 0.3/token 估算，中文每字 ≈ 2 token，
  * 加上角色 / tool_call 等元数据的固定开销。
  * 这不是精确计数，但足以做窗口管理。
  */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  let count = 0;
+
+  const ENGLISH_CHAR_WEIGHT = 0.3;
+  let englishChars = 0;
+  let nonEnglishTokens = 0;
+
   for (const char of text) {
     if (char.charCodeAt(0) > 0x2fff) {
-      count += 2;
+      nonEnglishTokens += 2;
     } else {
-      count += 0.25;
+      englishChars += 1;
     }
   }
-  return Math.max(1, Math.ceil(count));
+
+  const englishTokens =
+    englishChars > 0 ? Math.max(1, Math.ceil(englishChars * ENGLISH_CHAR_WEIGHT)) : 0;
+
+  return englishTokens + nonEnglishTokens;
 }
 
 export function estimateMessageTokens(msg: ChatMessage): number {
@@ -33,7 +45,10 @@ export function estimateMessageTokens(msg: ChatMessage): number {
   }
   if (msg.tool_calls) {
     for (const tc of msg.tool_calls) {
-      tokens += estimateTokens(tc.function.name) + estimateTokens(tc.function.arguments) + 4;
+      tokens +=
+        estimateTokens(tc.function.name) +
+        estimateTokens(tc.function.arguments) +
+        4;
     }
   }
   if (msg.name) tokens += estimateTokens(msg.name);
@@ -46,14 +61,14 @@ export function estimateTotalTokens(messages: ChatMessage[]): number {
 
 export function trimMessages(
   messages: ChatMessage[],
-  maxTokens: number
+  maxTokens: number,
 ): ChatMessage[] {
   return trimMessagesWithMetadata(messages, maxTokens).messages;
 }
 
 export function trimMessagesWithMetadata(
   messages: ChatMessage[],
-  maxTokens: number
+  maxTokens: number,
 ): { messages: ChatMessage[]; removed: ChatMessage[] } {
   let total = estimateTotalTokens(messages);
   if (total <= maxTokens) {
@@ -64,18 +79,26 @@ export function trimMessagesWithMetadata(
   const removed: ChatMessage[] = [];
   const protectedCount = isSummaryMessage(trimmed[1]) ? 2 : 1;
 
-  let i = protectedCount;
+  const i = protectedCount;
   while (total > maxTokens && i < trimmed.length) {
     const msg = trimmed[i];
 
     if (trimmed.length - i <= 4) break;
 
-    if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+    if (
+      msg.role === "assistant" &&
+      msg.tool_calls &&
+      msg.tool_calls.length > 0
+    ) {
       const toolCallIds = new Set(msg.tool_calls.map((tc) => tc.id));
       let removeCount = 1;
       for (let j = i + 1; j < trimmed.length; j++) {
         const candidate = trimmed[j];
-        if (candidate.role === "tool" && candidate.tool_call_id && toolCallIds.has(candidate.tool_call_id)) {
+        if (
+          candidate.role === "tool" &&
+          candidate.tool_call_id &&
+          toolCallIds.has(candidate.tool_call_id)
+        ) {
           removeCount += 1;
         } else {
           break;

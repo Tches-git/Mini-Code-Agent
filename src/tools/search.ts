@@ -6,7 +6,13 @@ import type { ToolDefinition } from "../types/agent.js";
 import { createTool } from "./create-tool.js";
 
 const MAX_MATCHES = 50;
-const IGNORED_DIRECTORIES = new Set(["node_modules", ".git", ".backup", ".imports", "dist"]);
+const IGNORED_DIRECTORIES = new Set([
+  "node_modules",
+  ".git",
+  ".backup",
+  ".imports",
+  "dist",
+]);
 const root = process.cwd();
 
 type SearchMatch = {
@@ -26,20 +32,28 @@ type SearchFilters = {
 };
 
 function shouldSkipEntry(entryName: string): boolean {
-  return IGNORED_DIRECTORIES.has(entryName) || entryName.startsWith(".") || entryName.endsWith(".bak");
+  return (
+    IGNORED_DIRECTORIES.has(entryName) ||
+    entryName.startsWith(".") ||
+    entryName.endsWith(".bak")
+  );
 }
 
-function resolveSearchRoot(targetPath: string, confirmed = false): { fullPath: string; displayBase: string } {
+function resolveSearchRoot(
+  targetPath: string,
+  confirmed = false,
+): { fullPath: string; displayBase: string } {
   const fullPath = path.resolve(root, targetPath);
   const relativePath = path.relative(root, fullPath);
-  const isOutsideWorkspace = relativePath.startsWith("..") || path.isAbsolute(relativePath);
+  const isOutsideWorkspace =
+    relativePath.startsWith("..") || path.isAbsolute(relativePath);
   if (isOutsideWorkspace && !confirmed) {
     throw new Error("搜索工作区外目录前需要用户确认");
   }
 
   return {
     fullPath,
-    displayBase: isOutsideWorkspace ? fullPath : relativePath || "."
+    displayBase: isOutsideWorkspace ? fullPath : relativePath || ".",
   };
 }
 
@@ -97,7 +111,7 @@ function globToRegExp(pattern: string): RegExp {
       continue;
     }
 
-    if (/[$^+.()|{}\[\]\\]/.test(char)) {
+    if (/[$^+.()|{}[\]\\]/.test(char)) {
       regex += `\\${char}`;
       continue;
     }
@@ -116,15 +130,25 @@ function normalizeSearchFilters(input: {
   contextLines?: number;
   maxResults?: number;
 }): SearchFilters {
-  const contextLines = Number.isFinite(input.contextLines) ? Math.max(0, Math.min(5, input.contextLines || 0)) : 0;
-  const maxResults = Number.isFinite(input.maxResults) ? Math.max(1, Math.min(200, input.maxResults || MAX_MATCHES)) : MAX_MATCHES;
+  const contextLines = Number.isFinite(input.contextLines)
+    ? Math.max(0, Math.min(5, input.contextLines || 0))
+    : 0;
+  const maxResults = Number.isFinite(input.maxResults)
+    ? Math.max(1, Math.min(200, input.maxResults || MAX_MATCHES))
+    : MAX_MATCHES;
 
   return {
-    extensions: Array.from(new Set((input.extensions || []).map(normalizeExtension).filter(Boolean))),
-    includeGlobs: Array.from(new Set((input.includeGlobs || []).map(normalizeGlob).filter(Boolean))),
-    excludeGlobs: Array.from(new Set((input.excludeGlobs || []).map(normalizeGlob).filter(Boolean))),
+    extensions: Array.from(
+      new Set((input.extensions || []).map(normalizeExtension).filter(Boolean)),
+    ),
+    includeGlobs: Array.from(
+      new Set((input.includeGlobs || []).map(normalizeGlob).filter(Boolean)),
+    ),
+    excludeGlobs: Array.from(
+      new Set((input.excludeGlobs || []).map(normalizeGlob).filter(Boolean)),
+    ),
     contextLines,
-    maxResults
+    maxResults,
   };
 }
 
@@ -133,7 +157,10 @@ function matchesGlobPattern(filePath: string, pattern: string): boolean {
   return globToRegExp(pattern).test(normalizedPath);
 }
 
-function matchesSearchFilters(filePath: string, filters: SearchFilters): boolean {
+function matchesSearchFilters(
+  filePath: string,
+  filters: SearchFilters,
+): boolean {
   const normalizedPath = filePath.replace(/\\/g, "/");
 
   if (filters.extensions.length > 0) {
@@ -143,27 +170,43 @@ function matchesSearchFilters(filePath: string, filters: SearchFilters): boolean
     }
   }
 
-  if (filters.includeGlobs.length > 0 && !filters.includeGlobs.some((pattern) => matchesGlobPattern(normalizedPath, pattern))) {
+  if (
+    filters.includeGlobs.length > 0 &&
+    !filters.includeGlobs.some((pattern) =>
+      matchesGlobPattern(normalizedPath, pattern),
+    )
+  ) {
     return false;
   }
 
-  if (filters.excludeGlobs.some((pattern) => matchesGlobPattern(normalizedPath, pattern))) {
+  if (
+    filters.excludeGlobs.some((pattern) =>
+      matchesGlobPattern(normalizedPath, pattern),
+    )
+  ) {
     return false;
   }
 
   return true;
 }
 
-function buildContext(lines: string[], lineNumber: number, contextLines: number): { before?: string[]; after?: string[] } {
+function buildContext(
+  lines: string[],
+  lineNumber: number,
+  contextLines: number,
+): { before?: string[]; after?: string[] } {
   if (contextLines <= 0) {
     return {};
   }
 
-  const before = lines.slice(Math.max(0, lineNumber - contextLines - 1), Math.max(0, lineNumber - 1));
+  const before = lines.slice(
+    Math.max(0, lineNumber - contextLines - 1),
+    Math.max(0, lineNumber - 1),
+  );
   const after = lines.slice(lineNumber, lineNumber + contextLines);
   return {
     before: before.length > 0 ? before : undefined,
-    after: after.length > 0 ? after : undefined
+    after: after.length > 0 ? after : undefined,
   };
 }
 
@@ -202,7 +245,12 @@ function sortMatches(matches: SearchMatch[], query: string): SearchMatch[] {
   });
 }
 
-async function walk(dir: string, filters: SearchFilters, baseDir: string, result: string[] = []): Promise<string[]> {
+async function walk(
+  dir: string,
+  filters: SearchFilters,
+  baseDir: string,
+  result: string[] = [],
+): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (shouldSkipEntry(entry.name)) continue;
@@ -216,7 +264,11 @@ async function walk(dir: string, filters: SearchFilters, baseDir: string, result
   return result;
 }
 
-function parseRipgrepOutput(stdout: string, baseDir: string, filters: SearchFilters): SearchMatch[] {
+function parseRipgrepOutput(
+  stdout: string,
+  baseDir: string,
+  filters: SearchFilters,
+): SearchMatch[] {
   const matches: SearchMatch[] = [];
 
   for (const line of stdout.split("\n")) {
@@ -237,7 +289,10 @@ function parseRipgrepOutput(stdout: string, baseDir: string, filters: SearchFilt
       const matchPath = entry.data?.path?.text || "";
       if (!matchPath) continue;
 
-      const displayPath = toDisplayPath(baseDir, path.resolve(baseDir, matchPath));
+      const displayPath = toDisplayPath(
+        baseDir,
+        path.resolve(baseDir, matchPath),
+      );
       if (!matchesSearchFilters(displayPath, filters)) {
         continue;
       }
@@ -245,45 +300,53 @@ function parseRipgrepOutput(stdout: string, baseDir: string, filters: SearchFilt
       matches.push({
         path: displayPath,
         line: entry.data?.line_number || 0,
-        text: (entry.data?.lines?.text || "").trimEnd()
+        text: (entry.data?.lines?.text || "").trimEnd(),
       });
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 
   return matches;
 }
 
-async function searchWithRipgrep(query: string, searchRoot: string, filters: SearchFilters): Promise<SearchMatch[]> {
+async function searchWithRipgrep(
+  query: string,
+  searchRoot: string,
+  filters: SearchFilters,
+): Promise<SearchMatch[]> {
   try {
-    const result = await execa("rg", [
-      "--json",
-      "--line-number",
-      "--fixed-strings",
-      "--ignore-case",
-      "--glob",
-      "!node_modules/**",
-      "--glob",
-      "!dist/**",
-      "--glob",
-      "!.backup/**",
-      "--glob",
-      "!.imports/**",
-      "--glob",
-      "!**/*.bak",
-      query,
-      "."
-    ], {
-      cwd: searchRoot,
-      reject: false
-    });
+    const result = await execa(
+      "rg",
+      [
+        "--json",
+        "--line-number",
+        "--fixed-strings",
+        "--ignore-case",
+        "--glob",
+        "!node_modules/**",
+        "--glob",
+        "!dist/**",
+        "--glob",
+        "!.backup/**",
+        "--glob",
+        "!.imports/**",
+        "--glob",
+        "!**/*.bak",
+        query,
+        ".",
+      ],
+      {
+        cwd: searchRoot,
+        reject: false,
+      },
+    );
 
     if (result.failed && result.code === "ENOENT") {
       return [];
     }
 
-    const exitCode = result.exitCode ?? (typeof result.code === "number" ? result.code : undefined);
+    const exitCode =
+      result.exitCode ??
+      (typeof result.code === "number" ? result.code : undefined);
     if (exitCode !== 0 && exitCode !== 1) {
       throw new Error(result.stderr || `rg 退出码: ${result.exitCode}`);
     }
@@ -292,7 +355,7 @@ async function searchWithRipgrep(query: string, searchRoot: string, filters: Sea
       parseRipgrepOutput(result.stdout, searchRoot, filters)
         .filter((match) => match.path && match.line > 0)
         .slice(0, filters.maxResults),
-      query
+      query,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -303,7 +366,11 @@ async function searchWithRipgrep(query: string, searchRoot: string, filters: Sea
   }
 }
 
-async function searchWithFallback(query: string, searchRoot: string, filters: SearchFilters): Promise<SearchMatch[]> {
+async function searchWithFallback(
+  query: string,
+  searchRoot: string,
+  filters: SearchFilters,
+): Promise<SearchMatch[]> {
   const lowerQuery = query.toLowerCase();
   const files = await walk(searchRoot, filters, searchRoot);
   const matches: SearchMatch[] = [];
@@ -320,7 +387,7 @@ async function searchWithFallback(query: string, searchRoot: string, filters: Se
             line: index + 1,
             text: line.trim(),
             contextBefore: context.before,
-            contextAfter: context.after
+            contextAfter: context.after,
           });
         }
       });
@@ -334,7 +401,11 @@ async function searchWithFallback(query: string, searchRoot: string, filters: Se
   return sortMatches(matches.slice(0, filters.maxResults), query);
 }
 
-async function enrichMatchesWithContext(matches: SearchMatch[], searchRoot: string, contextLines: number): Promise<SearchMatch[]> {
+async function enrichMatchesWithContext(
+  matches: SearchMatch[],
+  searchRoot: string,
+  contextLines: number,
+): Promise<SearchMatch[]> {
   if (contextLines <= 0 || matches.length === 0) {
     return matches;
   }
@@ -356,18 +427,32 @@ async function enrichMatchesWithContext(matches: SearchMatch[], searchRoot: stri
         match.contextBefore = context.before;
         match.contextAfter = context.after;
       }
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 
   return matches;
 }
 
+export type { SearchFilters, SearchMatch };
+export {
+  buildContext,
+  globToRegExp,
+  matchesGlobPattern,
+  matchesSearchFilters,
+  normalizeExtension,
+  normalizeGlob,
+  normalizeSearchFilters,
+  parseRipgrepOutput,
+  scoreMatch,
+  shouldSkipEntry,
+  sortMatches,
+};
+
 export const searchTools: ToolDefinition[] = [
   createTool({
     name: "search_text",
-    description: "在文本文件中搜索关键词；可指定工作区内或确认后的工作区外目录范围，并支持文件类型、glob 过滤、上下文和结果数限制",
+    description:
+      "在文本文件中搜索关键词；可指定工作区内或确认后的工作区外目录范围，并支持文件类型、glob 过滤、上下文和结果数限制",
     schema: z.object({
       query: z.string().min(1, "搜索关键词不能为空"),
       path: z.string().optional(),
@@ -376,39 +461,46 @@ export const searchTools: ToolDefinition[] = [
       excludeGlobs: z.array(z.string()).optional(),
       contextLines: z.number().int().min(0).max(5).optional(),
       maxResults: z.number().int().min(1).max(200).optional(),
-      confirmed: z.boolean().optional()
+      confirmed: z.boolean().optional(),
     }),
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string" },
-        path: { type: "string", description: "可选，限定搜索目录，默认当前工作区" },
+        path: {
+          type: "string",
+          description: "可选，限定搜索目录，默认当前工作区",
+        },
         extensions: {
           type: "array",
           items: { type: "string" },
-          description: "可选，只搜索指定后缀，如 ['ts', '.md']"
+          description: "可选，只搜索指定后缀，如 ['ts', '.md']",
         },
         includeGlobs: {
           type: "array",
           items: { type: "string" },
-          description: "可选，仅包含匹配这些 glob 的文件，如 ['src/**', '**/*.test.ts']"
+          description:
+            "可选，仅包含匹配这些 glob 的文件，如 ['src/**', '**/*.test.ts']",
         },
         excludeGlobs: {
           type: "array",
           items: { type: "string" },
-          description: "可选，排除匹配这些 glob 的文件，如 ['**/fixtures/**']"
+          description: "可选，排除匹配这些 glob 的文件，如 ['**/fixtures/**']",
         },
         contextLines: {
           type: "number",
-          description: "可选，每条命中前后额外返回多少行上下文，范围 0-5"
+          description: "可选，每条命中前后额外返回多少行上下文，范围 0-5",
         },
         maxResults: {
           type: "number",
-          description: "可选，最多返回多少条命中，范围 1-200"
+          description: "可选，最多返回多少条命中，范围 1-200",
         },
-        confirmed: { type: "boolean", description: "仅当用户已明确确认搜索工作区外目录时才传 true" }
+        confirmed: {
+          type: "boolean",
+          description: "仅当用户已明确确认搜索工作区外目录时才传 true",
+        },
       },
-      required: ["query"]
+      required: ["query"],
     },
     async execute(input) {
       const resolved = resolveSearchRoot(input.path || ".", input.confirmed);
@@ -417,12 +509,23 @@ export const searchTools: ToolDefinition[] = [
         includeGlobs: input.includeGlobs,
         excludeGlobs: input.excludeGlobs,
         contextLines: input.contextLines,
-        maxResults: input.maxResults
+        maxResults: input.maxResults,
       });
-      const rgMatches = await searchWithRipgrep(input.query, resolved.fullPath, filters);
-      const matches = rgMatches.length > 0 ? rgMatches : await searchWithFallback(input.query, resolved.fullPath, filters);
-      const enrichedMatches = await enrichMatchesWithContext(matches, resolved.fullPath, filters.contextLines);
+      const rgMatches = await searchWithRipgrep(
+        input.query,
+        resolved.fullPath,
+        filters,
+      );
+      const matches =
+        rgMatches.length > 0
+          ? rgMatches
+          : await searchWithFallback(input.query, resolved.fullPath, filters);
+      const enrichedMatches = await enrichMatchesWithContext(
+        matches,
+        resolved.fullPath,
+        filters.contextLines,
+      );
       return JSON.stringify(enrichedMatches, null, 2);
-    }
-  })
+    },
+  }),
 ];
