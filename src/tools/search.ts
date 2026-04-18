@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 import { execa } from "execa";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
@@ -44,9 +45,14 @@ type SearchFilters = {
   maxResults: number;
 };
 
+type ProjectMapRole = "entry" | "core" | "leaf" | "module";
+
 type ProjectMapEntry = {
   path: string;
   symbols: string[];
+  relations: string[];
+  importedBy: string[];
+  role: ProjectMapRole;
   score: number;
 };
 
@@ -452,7 +458,119 @@ async function enrichMatchesWithContext(
   return matches;
 }
 
-function extractTopLevelSymbols(content: string): string[] {
+function getScriptKind(filePath: string): ts.ScriptKind {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".ts":
+      return ts.ScriptKind.TS;
+    case ".tsx":
+      return ts.ScriptKind.TSX;
+    case ".js":
+      return ts.ScriptKind.JS;
+    case ".jsx":
+      return ts.ScriptKind.JSX;
+    case ".mts":
+      return ts.ScriptKind.TS;
+    case ".cts":
+      return ts.ScriptKind.TS;
+    case ".mjs":
+      return ts.ScriptKind.JS;
+    case ".cjs":
+      return ts.ScriptKind.JS;
+    default:
+      return ts.ScriptKind.Unknown;
+  }
+}
+
+function extractTopLevelSymbolsWithAst(
+  content: string,
+  filePath = "file.ts",
+): string[] {
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    getScriptKind(filePath),
+  );
+  const symbols = new Set<string>();
+
+  const addSymbol = (name: string | undefined) => {
+    if (!name) return;
+    symbols.add(name);
+  };
+
+  const addBindingName = (name: ts.BindingName) => {
+    if (ts.isIdentifier(name)) {
+      addSymbol(name.text);
+      return;
+    }
+    for (const element of name.elements) {
+      if (ts.isBindingElement(element)) {
+        addBindingName(element.name);
+      }
+    }
+  };
+
+  const hasExportModifier = (node: ts.Node) => {
+    const maybeModifiers = (node as { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers;
+    return Boolean(
+      maybeModifiers?.some(
+        (modifier: ts.ModifierLike) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      ),
+    );
+  };
+
+  const hasSymbolLikeInitializer = (node: ts.VariableDeclaration) => {
+    const initializer = node.initializer;
+    return Boolean(
+      initializer &&
+        (ts.isArrowFunction(initializer) ||
+          ts.isFunctionExpression(initializer) ||
+          ts.isClassExpression(initializer)),
+    );
+  };
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isFunctionDeclaration(statement)) {
+      if (hasExportModifier(statement)) addSymbol(statement.name?.text);
+    } else if (ts.isClassDeclaration(statement)) {
+      if (hasExportModifier(statement)) addSymbol(statement.name?.text);
+    } else if (ts.isInterfaceDeclaration(statement)) {
+      if (hasExportModifier(statement)) addSymbol(statement.name.text);
+    } else if (ts.isTypeAliasDeclaration(statement)) {
+      if (hasExportModifier(statement)) addSymbol(statement.name.text);
+    } else if (ts.isEnumDeclaration(statement)) {
+      if (hasExportModifier(statement)) addSymbol(statement.name.text);
+    } else if (ts.isVariableStatement(statement)) {
+      const shouldIncludeStatement = hasExportModifier(statement);
+      for (const declaration of statement.declarationList.declarations) {
+        if (shouldIncludeStatement || hasSymbolLikeInitializer(declaration)) {
+          addBindingName(declaration.name);
+        }
+      }
+    } else if (ts.isExportDeclaration(statement) && statement.exportClause) {
+      if (ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          addSymbol(element.name.text);
+        }
+      }
+    }
+    if (symbols.size >= 12) {
+      return Array.from(symbols);
+    }
+  }
+
+  return Array.from(symbols);
+}
+
+function extractTopLevelSymbols(content: string, filePath = "file.ts"): string[] {
+  if (getScriptKind(filePath) !== ts.ScriptKind.Unknown) {
+    const astSymbols = extractTopLevelSymbolsWithAst(content, filePath);
+    if (astSymbols.length > 0) {
+      return astSymbols;
+    }
+  }
+
   const patterns = [
     /export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g,
     /(?:^|\n)(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|function\b)/g,
@@ -473,12 +591,85 @@ function extractTopLevelSymbols(content: string): string[] {
   return Array.from(symbols);
 }
 
-function scoreProjectMapEntry(filePath: string, symbols: string[]): number {
+function extractRelationsWithAst(
+  content: string,
+  filePath = "file.ts",
+): string[] {
+  if (getScriptKind(filePath) === ts.ScriptKind.Unknown) {
+    return [];
+  }
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    content,
+    ts.ScriptTarget.Latest,
+    true,
+    getScriptKind(filePath),
+  );
+  const relations = new Set<string>();
+
+  const addRelation = (specifier: string | undefined) => {
+    if (!specifier) return;
+    if (!specifier.startsWith(".")) return;
+    relations.add(specifier);
+  };
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      addRelation(statement.moduleSpecifier.getText(sourceFile).slice(1, -1));
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
+      addRelation(statement.moduleSpecifier.getText(sourceFile).slice(1, -1));
+    }
+    if (relations.size >= 8) {
+      return Array.from(relations);
+    }
+  }
+
+  return Array.from(relations);
+}
+
+function resolveProjectRelation(
+  fromPath: string,
+  relation: string,
+): string {
+  const baseDir = path.posix.dirname(fromPath);
+  return path.posix.normalize(path.posix.join(baseDir, relation));
+}
+
+function getProjectMapRole(
+  filePath: string,
+  relations: string[],
+  importedBy: string[],
+): ProjectMapRole {
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  if (/\/(index|main|app|server|client|cli)\.[^.]+$/.test(normalizedPath)) {
+    return "entry";
+  }
+  if (relations.length > 0 && importedBy.length > 0) {
+    return "core";
+  }
+  if (relations.length === 0 && importedBy.length > 0) {
+    return "leaf";
+  }
+  return "module";
+}
+
+function scoreProjectMapEntry(
+  filePath: string,
+  symbols: string[],
+  relations: string[] = [],
+  importedBy: string[] = [],
+  role: ProjectMapRole = "module",
+): number {
   const normalizedPath = filePath.replace(/\\/g, "/");
   let score = Math.max(1, 12 - normalizedPath.split("/").length);
   if (/\/index\.[^.]+$/.test(normalizedPath)) score += 3;
   if (/\/(cli|agent|tools|llm)\//.test(normalizedPath)) score += 2;
   if (symbols.length > 0) score += Math.min(6, symbols.length);
+  if (relations.length > 0) score += Math.min(4, relations.length);
+  if (importedBy.length > 0) score += Math.min(4, importedBy.length);
+  if (role === "entry") score += 3;
+  if (role === "core") score += 4;
+  if (role === "leaf") score += 2;
   return score;
 }
 
@@ -499,15 +690,46 @@ async function buildProjectMap(
     try {
       const content = await fs.readFile(file, "utf8");
       const displayPath = toDisplayPath(resolved.fullPath, file);
-      const symbols = extractTopLevelSymbols(content);
+      const symbols = extractTopLevelSymbols(content, file);
+      const relations = extractRelationsWithAst(content, file);
       entries.push({
         path: displayPath,
         symbols,
-        score: scoreProjectMapEntry(displayPath, symbols),
+        relations,
+        importedBy: [],
+        role: "module",
+        score: 0,
       });
     } catch {
       continue;
     }
+  }
+
+  const pathSet = new Set(entries.map((entry) => entry.path));
+  const importedByMap = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    for (const relation of entry.relations) {
+      const resolvedRelation = resolveProjectRelation(entry.path, relation);
+      for (const candidate of [resolvedRelation, `${resolvedRelation}.ts`, `${resolvedRelation}.tsx`, `${resolvedRelation}.js`, `${resolvedRelation}.jsx`, `${resolvedRelation}/index.ts`, `${resolvedRelation}/index.js`]) {
+        if (!pathSet.has(candidate)) continue;
+        const bucket = importedByMap.get(candidate) || new Set<string>();
+        bucket.add(entry.path);
+        importedByMap.set(candidate, bucket);
+        break;
+      }
+    }
+  }
+
+  for (const entry of entries) {
+    entry.importedBy = Array.from(importedByMap.get(entry.path) || []).sort();
+    entry.role = getProjectMapRole(entry.path, entry.relations, entry.importedBy);
+    entry.score = scoreProjectMapEntry(
+      entry.path,
+      entry.symbols,
+      entry.relations,
+      entry.importedBy,
+      entry.role,
+    );
   }
 
   return entries
@@ -519,7 +741,10 @@ export type { ProjectMapEntry, SearchFilters, SearchMatch };
 export {
   buildContext,
   buildProjectMap,
+  extractRelationsWithAst,
   extractTopLevelSymbols,
+  extractTopLevelSymbolsWithAst,
+  getProjectMapRole,
   globToRegExp,
   matchesGlobPattern,
   matchesSearchFilters,

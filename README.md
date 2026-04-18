@@ -103,7 +103,7 @@ flowchart LR
 
 市面上的 AI 编程工具大多是 IDE 插件或 Web 聊天界面，底层的 Agent 机制对开发者不透明。这个项目从第一行代码开始，独立实现了一个可在终端运行的 Code Agent，重点解决以下问题：
 
-- **工具调用闭环**：不只是生成文本，而是让 LLM 自主调用文件操作、搜索、project map、命令执行、Git、diagnostics 等工具，形成完整的任务执行链路
+- **工具调用闭环**：不只是生成文本，而是让 LLM 自主调用文件操作、搜索、project map、命令执行、Git、diagnostics 等工具，形成完整的任务执行链路；其中 project map 可快速返回关键文件、顶层符号、轻量依赖关系，以及 importedBy / entry/core/leaf 等结构信息
 - **安全边界控制**：Agent 能执行命令、读写文件，如何在给予能力的同时守住安全底线
 - **长会话上下文管理**：多轮对话中 token 预算有限，如何在裁剪历史时保留关键信息，并支持会话持久化与恢复
 - **修改后的自动验证**：代码改完不能靠 LLM 自己说"改好了"，需要自动跑验证，并在失败时结合结构化 diagnostics 反馈修复
@@ -246,7 +246,7 @@ if (isReadOnlyExplorationTurn && !hasModifiedFiles && maxIterations < EXTERNAL_A
 | `insert_after` | 锚点后插入 | 自动备份 |
 | `replace_text` | 局部文本替换 | 自动备份 |
 | `search_text` | 全文搜索（ripgrep 优先） | 支持后缀 / glob / 上下文行数过滤 |
-| `project_map` | 生成项目结构地图，返回关键文件与顶层符号 | 工作区外需确认 |
+| `project_map` | 生成项目结构地图，返回关键文件、顶层符号、import/export 关系、importedBy 与 entry/core/leaf/module 角色 | 工作区外需确认 |
 | `import_external_file` | 导入外部文档并提取文本 | 需确认 + 缓存到 `.imports/` |
 | `run_command` | 执行命令 | 三级策略 + 审计日志 |
 | `git_status` / `git_diff` / `git_log` | 查看仓库状态、差异与提交历史 | 仅限 Git 仓库内只读操作 |

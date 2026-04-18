@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   buildContext,
   buildProjectMap,
+  extractRelationsWithAst,
   extractTopLevelSymbols,
+  extractTopLevelSymbolsWithAst,
+  getProjectMapRole,
   globToRegExp,
   matchesGlobPattern,
   matchesSearchFilters,
@@ -326,7 +329,7 @@ describe("project map helpers", () => {
       "export class Agent {}",
       "export type AgentConfig = {};",
     ].join("\n");
-    expect(extractTopLevelSymbols(content)).toEqual([
+    expect(extractTopLevelSymbols(content, "file.ts")).toEqual([
       "run",
       "createAgent",
       "Agent",
@@ -334,10 +337,60 @@ describe("project map helpers", () => {
     ]);
   });
 
-  it("关键文件和符号越多分数越高", () => {
-    expect(scoreProjectMapEntry("src/agent/index.ts", ["a", "b"])).toBeGreaterThan(
-      scoreProjectMapEntry("src/deep/nested/file.ts", []),
-    );
+  it("AST 提取支持解构和重导出符号", () => {
+    const content = [
+      "export const { createAgent, runAgent: run } = factory();",
+      "export { default as AgentOrchestrator, helper } from './agent';",
+      "const internal = 1;",
+      "const localFactory = () => {};",
+    ].join("\n");
+    expect(extractTopLevelSymbolsWithAst(content, "file.ts")).toEqual([
+      "createAgent",
+      "run",
+      "AgentOrchestrator",
+      "helper",
+      "localFactory",
+    ]);
+  });
+
+  it("AST 提取支持内部相对依赖关系", () => {
+    const content = [
+      "import { readFile } from './filesystem';",
+      "import { z } from 'zod';",
+      "export { helper } from '../utils/helper';",
+      "export * from './types';",
+    ].join("\n");
+    expect(extractRelationsWithAst(content, "file.ts")).toEqual([
+      "./filesystem",
+      "../utils/helper",
+      "./types",
+    ]);
+  });
+
+  it("非 TS/JS 文件仍回退到正则提取", () => {
+    const content = "export function load() {}\nexport class Widget {}";
+    expect(extractTopLevelSymbols(content, "component.svelte")).toEqual([
+      "load",
+      "Widget",
+    ]);
+  });
+
+  it("可以推断 entry/core/leaf 角色", () => {
+    expect(getProjectMapRole("src/cli/index.ts", ["../agent/orchestrator"], [])).toBe("entry");
+    expect(getProjectMapRole("src/agent/orchestrator.ts", ["../tools/index"], ["src/cli/index.ts"])).toBe("core");
+    expect(getProjectMapRole("src/types/agent.ts", [], ["src/agent/orchestrator.ts"])).toBe("leaf");
+  });
+
+  it("关键文件、符号和关系越多分数越高", () => {
+    expect(
+      scoreProjectMapEntry(
+        "src/agent/index.ts",
+        ["a", "b"],
+        ["./dep"],
+        ["src/cli/index.ts"],
+        "core",
+      ),
+    ).toBeGreaterThan(scoreProjectMapEntry("src/deep/nested/file.ts", []));
   });
 
   it("可以生成当前项目的 project map", async () => {
@@ -346,6 +399,9 @@ describe("project map helpers", () => {
     expect(result.length).toBeLessThanOrEqual(5);
     expect(result[0]).toHaveProperty("path");
     expect(result[0]).toHaveProperty("symbols");
+    expect(result[0]).toHaveProperty("relations");
+    expect(result[0]).toHaveProperty("importedBy");
+    expect(result[0]).toHaveProperty("role");
     expect(result[0]).toHaveProperty("score");
   });
 });
