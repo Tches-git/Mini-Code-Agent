@@ -47,11 +47,19 @@ type SearchFilters = {
 
 type ProjectMapRole = "entry" | "core" | "leaf" | "module";
 
+type ProjectMapReference = {
+  symbol: string;
+  importedBy: string[];
+};
+
 type ProjectMapEntry = {
   path: string;
   symbols: string[];
   relations: string[];
+  dependsOn: string[];
+  externalDeps: string[];
   importedBy: string[];
+  references: ProjectMapReference[];
   role: ProjectMapRole;
   score: number;
 };
@@ -591,20 +599,28 @@ function extractTopLevelSymbols(content: string, filePath = "file.ts"): string[]
   return Array.from(symbols);
 }
 
-function extractRelationsWithAst(
-  content: string,
-  filePath = "file.ts",
-): string[] {
-  if (getScriptKind(filePath) === ts.ScriptKind.Unknown) {
-    return [];
+function parseSourceFile(content: string, filePath = "file.ts"): ts.SourceFile | null {
+  const scriptKind = getScriptKind(filePath);
+  if (scriptKind === ts.ScriptKind.Unknown) {
+    return null;
   }
-  const sourceFile = ts.createSourceFile(
+  return ts.createSourceFile(
     filePath,
     content,
     ts.ScriptTarget.Latest,
     true,
-    getScriptKind(filePath),
+    scriptKind,
   );
+}
+
+function extractRelationsWithAst(
+  content: string,
+  filePath = "file.ts",
+): string[] {
+  const sourceFile = parseSourceFile(content, filePath);
+  if (!sourceFile) {
+    return [];
+  }
   const relations = new Set<string>();
 
   const addRelation = (specifier: string | undefined) => {
@@ -627,12 +643,102 @@ function extractRelationsWithAst(
   return Array.from(relations);
 }
 
+function extractImportedSymbolsWithAst(
+  content: string,
+  filePath = "file.ts",
+): Array<{ specifier: string; symbols: string[] }> {
+  const sourceFile = parseSourceFile(content, filePath);
+  if (!sourceFile) {
+    return [];
+  }
+  const imports: Array<{ specifier: string; symbols: string[] }> = [];
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      const specifier = statement.moduleSpecifier.getText(sourceFile).slice(1, -1);
+      if (!specifier.startsWith(".")) continue;
+      const symbols: string[] = [];
+      const clause = statement.importClause;
+      if (clause?.name) {
+        symbols.push(clause.name.text);
+      }
+      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const element of clause.namedBindings.elements) {
+          symbols.push(element.propertyName?.text || element.name.text);
+        }
+      }
+      imports.push({ specifier, symbols });
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
+      const specifier = statement.moduleSpecifier.getText(sourceFile).slice(1, -1);
+      if (!specifier.startsWith(".")) continue;
+      const symbols: string[] = [];
+      if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          symbols.push(element.propertyName?.text || element.name.text);
+        }
+      }
+      imports.push({ specifier, symbols });
+    }
+  }
+
+  return imports;
+}
+
+function extractExternalDependenciesWithAst(
+  content: string,
+  filePath = "file.ts",
+): string[] {
+  const sourceFile = parseSourceFile(content, filePath);
+  if (!sourceFile) {
+    return [];
+  }
+  const dependencies = new Set<string>();
+
+  const addDependency = (specifier: string | undefined) => {
+    if (!specifier || specifier.startsWith(".")) return;
+    dependencies.add(specifier);
+  };
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      addDependency(statement.moduleSpecifier.getText(sourceFile).slice(1, -1));
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
+      addDependency(statement.moduleSpecifier.getText(sourceFile).slice(1, -1));
+    }
+    if (dependencies.size >= 12) {
+      return Array.from(dependencies).sort();
+    }
+  }
+
+  return Array.from(dependencies).sort();
+}
+
 function resolveProjectRelation(
   fromPath: string,
   relation: string,
 ): string {
   const baseDir = path.posix.dirname(fromPath);
   return path.posix.normalize(path.posix.join(baseDir, relation));
+}
+
+function resolveCandidatePath(
+  pathSet: Set<string>,
+  fromPath: string,
+  relation: string,
+): string | null {
+  const resolvedRelation = resolveProjectRelation(fromPath, relation);
+  for (const candidate of [
+    resolvedRelation,
+    `${resolvedRelation}.ts`,
+    `${resolvedRelation}.tsx`,
+    `${resolvedRelation}.js`,
+    `${resolvedRelation}.jsx`,
+    `${resolvedRelation}/index.ts`,
+    `${resolvedRelation}/index.js`,
+  ]) {
+    if (pathSet.has(candidate)) return candidate;
+  }
+  return null;
 }
 
 function getProjectMapRole(
@@ -659,6 +765,7 @@ function scoreProjectMapEntry(
   relations: string[] = [],
   importedBy: string[] = [],
   role: ProjectMapRole = "module",
+  externalDeps: string[] = [],
 ): number {
   const normalizedPath = filePath.replace(/\\/g, "/");
   let score = Math.max(1, 12 - normalizedPath.split("/").length);
@@ -667,6 +774,7 @@ function scoreProjectMapEntry(
   if (symbols.length > 0) score += Math.min(6, symbols.length);
   if (relations.length > 0) score += Math.min(4, relations.length);
   if (importedBy.length > 0) score += Math.min(4, importedBy.length);
+  if (externalDeps.length > 0) score += Math.min(3, externalDeps.length);
   if (role === "entry") score += 3;
   if (role === "core") score += 4;
   if (role === "leaf") score += 2;
@@ -696,7 +804,10 @@ async function buildProjectMap(
         path: displayPath,
         symbols,
         relations,
+        dependsOn: [],
+        externalDeps: extractExternalDependenciesWithAst(content, file),
         importedBy: [],
+        references: [],
         role: "module",
         score: 0,
       });
@@ -707,21 +818,48 @@ async function buildProjectMap(
 
   const pathSet = new Set(entries.map((entry) => entry.path));
   const importedByMap = new Map<string, Set<string>>();
+  const referenceMap = new Map<string, Map<string, Set<string>>>();
+
   for (const entry of entries) {
     for (const relation of entry.relations) {
-      const resolvedRelation = resolveProjectRelation(entry.path, relation);
-      for (const candidate of [resolvedRelation, `${resolvedRelation}.ts`, `${resolvedRelation}.tsx`, `${resolvedRelation}.js`, `${resolvedRelation}.jsx`, `${resolvedRelation}/index.ts`, `${resolvedRelation}/index.js`]) {
-        if (!pathSet.has(candidate)) continue;
-        const bucket = importedByMap.get(candidate) || new Set<string>();
-        bucket.add(entry.path);
-        importedByMap.set(candidate, bucket);
-        break;
+      const candidate = resolveCandidatePath(pathSet, entry.path, relation);
+      if (!candidate) continue;
+      entry.dependsOn.push(candidate);
+      const bucket = importedByMap.get(candidate) || new Set<string>();
+      bucket.add(entry.path);
+      importedByMap.set(candidate, bucket);
+    }
+
+    const absolutePath = path.resolve(resolved.fullPath, entry.path);
+    try {
+      const content = await fs.readFile(absolutePath, "utf8");
+      const imports = extractImportedSymbolsWithAst(content, absolutePath);
+      for (const imported of imports) {
+        const candidate = resolveCandidatePath(pathSet, entry.path, imported.specifier);
+        if (!candidate) continue;
+        const symbolMap = referenceMap.get(candidate) || new Map<string, Set<string>>();
+        for (const symbol of imported.symbols) {
+          const files = symbolMap.get(symbol) || new Set<string>();
+          files.add(entry.path);
+          symbolMap.set(symbol, files);
+        }
+        referenceMap.set(candidate, symbolMap);
       }
+    } catch {
+      continue;
     }
   }
 
   for (const entry of entries) {
+    entry.dependsOn = Array.from(new Set(entry.dependsOn)).sort();
     entry.importedBy = Array.from(importedByMap.get(entry.path) || []).sort();
+    entry.references = Array.from(referenceMap.get(entry.path)?.entries() || [])
+      .filter(([symbol]) => entry.symbols.includes(symbol))
+      .map(([symbol, files]) => ({
+        symbol,
+        importedBy: Array.from(files).sort(),
+      }))
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
     entry.role = getProjectMapRole(entry.path, entry.relations, entry.importedBy);
     entry.score = scoreProjectMapEntry(
       entry.path,
@@ -729,6 +867,7 @@ async function buildProjectMap(
       entry.relations,
       entry.importedBy,
       entry.role,
+      entry.externalDeps,
     );
   }
 
@@ -741,10 +880,14 @@ export type { ProjectMapEntry, SearchFilters, SearchMatch };
 export {
   buildContext,
   buildProjectMap,
+  extractExternalDependenciesWithAst,
+  extractImportedSymbolsWithAst,
   extractRelationsWithAst,
   extractTopLevelSymbols,
   extractTopLevelSymbolsWithAst,
   getProjectMapRole,
+  resolveCandidatePath,
+  resolveProjectRelation,
   globToRegExp,
   matchesGlobPattern,
   matchesSearchFilters,

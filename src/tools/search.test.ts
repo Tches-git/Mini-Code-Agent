@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildContext,
   buildProjectMap,
+  extractExternalDependenciesWithAst,
+  extractImportedSymbolsWithAst,
   extractRelationsWithAst,
   extractTopLevelSymbols,
   extractTopLevelSymbolsWithAst,
@@ -13,6 +15,8 @@ import {
   normalizeGlob,
   normalizeSearchFilters,
   parseRipgrepOutput,
+  resolveCandidatePath,
+  resolveProjectRelation,
   type SearchFilters,
   type SearchMatch,
   scoreMatch,
@@ -367,12 +371,43 @@ describe("project map helpers", () => {
     ]);
   });
 
+  it("AST 提取支持符号级 import/export 关系", () => {
+    const content = [
+      "import defaultAgent, { createAgent, runAgent as run } from './agent';",
+      "export { helper, format as print } from '../utils/helper';",
+    ].join("\n");
+    expect(extractImportedSymbolsWithAst(content, "file.ts")).toEqual([
+      { specifier: "./agent", symbols: ["defaultAgent", "createAgent", "runAgent"] },
+      { specifier: "../utils/helper", symbols: ["helper", "format"] },
+    ]);
+  });
+
+  it("AST 提取支持外部依赖", () => {
+    const content = [
+      "import ts from 'typescript';",
+      "import { execa } from 'execa';",
+      "export { z } from 'zod';",
+      "import { helper } from './local';",
+    ].join("\n");
+    expect(extractExternalDependenciesWithAst(content, "file.ts")).toEqual([
+      "execa",
+      "typescript",
+      "zod",
+    ]);
+  });
+
   it("非 TS/JS 文件仍回退到正则提取", () => {
     const content = "export function load() {}\nexport class Widget {}";
     expect(extractTopLevelSymbols(content, "component.svelte")).toEqual([
       "load",
       "Widget",
     ]);
+  });
+
+  it("可以解析并命中工作区内依赖目标", () => {
+    const pathSet = new Set(["src/agent/orchestrator.ts", "src/tools/index.ts"]);
+    expect(resolveProjectRelation("src/agent/orchestrator.ts", "../tools/index")).toBe("src/tools/index");
+    expect(resolveCandidatePath(pathSet, "src/agent/orchestrator.ts", "../tools/index")).toBe("src/tools/index.ts");
   });
 
   it("可以推断 entry/core/leaf 角色", () => {
@@ -389,6 +424,7 @@ describe("project map helpers", () => {
         ["./dep"],
         ["src/cli/index.ts"],
         "core",
+        ["typescript"],
       ),
     ).toBeGreaterThan(scoreProjectMapEntry("src/deep/nested/file.ts", []));
   });
@@ -400,7 +436,10 @@ describe("project map helpers", () => {
     expect(result[0]).toHaveProperty("path");
     expect(result[0]).toHaveProperty("symbols");
     expect(result[0]).toHaveProperty("relations");
+    expect(result[0]).toHaveProperty("dependsOn");
+    expect(result[0]).toHaveProperty("externalDeps");
     expect(result[0]).toHaveProperty("importedBy");
+    expect(result[0]).toHaveProperty("references");
     expect(result[0]).toHaveProperty("role");
     expect(result[0]).toHaveProperty("score");
   });
