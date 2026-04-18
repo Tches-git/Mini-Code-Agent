@@ -4,8 +4,10 @@ import {
   buildFailurePrompt,
   getDiagnosticsForValidationCommand,
   getValidationPlan,
+  getValidationReplayCommand,
   isValidationCommand,
   parseCommandResult,
+  shouldRetryValidationWithFallback,
 } from "./validation.js";
 
 beforeEach(() => {
@@ -60,6 +62,71 @@ describe("validation helpers", () => {
     expect(isValidationCommand("npm run test")).toBe(true);
     expect(isValidationCommand("eslint")).toBe(true);
     expect(isValidationCommand("npm run dev")).toBe(false);
+  });
+
+  it("shouldRetryValidationWithFallback 能识别定向测试参数不受支持", () => {
+    expect(
+      shouldRetryValidationWithFallback(
+        "npm run test -- src/foo.test.ts",
+        {
+          command: "npm run test -- src/foo.test.ts",
+          exitCode: 1,
+          stdout: "",
+          stderr: "Unknown option '--runTestsByPath'",
+        },
+        "npm run test",
+      ),
+    ).toBe(true);
+    expect(
+      shouldRetryValidationWithFallback(
+        "npm run test -- src/foo.test.ts",
+        {
+          command: "npm run test -- src/foo.test.ts",
+          exitCode: 1,
+          stdout: "1 test failed",
+          stderr: "AssertionError",
+        },
+        "npm run test",
+      ),
+    ).toBe(false);
+  });
+
+  it("getValidationReplayCommand 能从 vitest 输出提取失败测试路径", () => {
+    expect(
+      getValidationReplayCommand(
+        {
+          kind: "test",
+          command: "npm run test",
+          targeted: false,
+          testRunner: "vitest",
+        },
+        {
+          command: "npm run test",
+          exitCode: 1,
+          stdout: " FAIL  src/utils/token.test.ts\n FAIL  src/cli/interactive.test.ts",
+          stderr: "",
+        },
+      ),
+    ).toBe("npm run test -- src/utils/token.test.ts src/cli/interactive.test.ts");
+  });
+
+  it("getValidationReplayCommand 能从 jest 输出提取失败测试路径", () => {
+    expect(
+      getValidationReplayCommand(
+        {
+          kind: "test",
+          command: "npm run test",
+          targeted: false,
+          testRunner: "jest",
+        },
+        {
+          command: "npm run test",
+          exitCode: 1,
+          stdout: "FAIL src/foo.test.ts\nPASS src/bar.test.ts",
+          stderr: "",
+        },
+      ),
+    ).toBe("npm run test -- --runTestsByPath src/foo.test.ts src/bar.test.ts");
   });
 });
 
@@ -117,6 +184,63 @@ describe("getValidationPlan", () => {
     expect(plan.commands).toEqual([
       "npm run lint",
       "npm run test",
+      "npm run build",
+    ]);
+  });
+
+  it("测试文件改动时优先运行受影响的 vitest 文件", async () => {
+    vi.spyOn(fs, "readFile").mockResolvedValue(
+      JSON.stringify({
+        scripts: { lint: "biome check src/", build: "tsc", test: "vitest run" },
+      }),
+    );
+    vi.spyOn(fs, "access").mockImplementation(async (target) => {
+      if (String(target).endsWith("package-lock.json")) return;
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    const plan = await getValidationPlan([
+      "src/utils/token.test.ts",
+      "src/cli/interactive.test.ts",
+    ]);
+    expect(plan.commands).toEqual([
+      "npm run lint",
+      "npm run test -- src/utils/token.test.ts src/cli/interactive.test.ts",
+    ]);
+    expect(plan.steps).toEqual([
+      {
+        kind: "lint",
+        command: "npm run lint",
+        targeted: false,
+      },
+      {
+        kind: "test",
+        command: "npm run test -- src/utils/token.test.ts src/cli/interactive.test.ts",
+        fallbackCommand: "npm run test",
+        targeted: true,
+        testRunner: "vitest",
+      },
+    ]);
+    expect(plan.reason).toContain("优先运行受影响测试文件");
+  });
+
+  it("源码和 jest 测试同时改动时按路径运行受影响测试", async () => {
+    vi.spyOn(fs, "readFile").mockResolvedValue(
+      JSON.stringify({
+        scripts: { lint: "eslint .", build: "tsc", test: "jest --runInBand" },
+      }),
+    );
+    vi.spyOn(fs, "access").mockImplementation(async (target) => {
+      if (String(target).endsWith("package-lock.json")) return;
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    const plan = await getValidationPlan([
+      "src/index.ts",
+      "src/index.test.ts",
+      "src/path with space.spec.ts",
+    ]);
+    expect(plan.commands).toEqual([
+      "npm run lint",
+      'npm run test -- --runTestsByPath src/index.test.ts "src/path with space.spec.ts"',
       "npm run build",
     ]);
   });

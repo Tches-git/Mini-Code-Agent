@@ -194,6 +194,28 @@ describe("getRunCommandPolicy", () => {
       expect(result.decision).toBe("allow");
     });
 
+    it("allows npm run test with forwarded file args", async () => {
+      const result = await getRunCommandPolicy(
+        "npm run test -- src/utils/token.test.ts",
+      );
+      expect(result.decision).toBe("allow");
+    });
+
+    it("allows npm run test with jest targeted flags", async () => {
+      vi.spyOn(fs, "readFile").mockResolvedValue(
+        JSON.stringify({
+          scripts: {
+            ...JSON.parse(FAKE_PACKAGE_JSON).scripts,
+            test: "jest --runInBand",
+          },
+        }),
+      );
+      const result = await getRunCommandPolicy(
+        "npm run test -- --runTestsByPath src/utils/token.test.ts",
+      );
+      expect(result.decision).toBe("allow");
+    });
+
     it("allows bare package manager (help)", async () => {
       const result = await getRunCommandPolicy("npm");
       expect(result.decision).toBe("allow");

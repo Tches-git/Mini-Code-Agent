@@ -267,6 +267,164 @@ describe("AgentOrchestrator", () => {
     expect(savedData.summaryFocus).toBeDefined();
   });
 
+  it("定向测试参数不受支持时会回退到完整测试", async () => {
+    vi.spyOn(validationModule, "getValidationPlan").mockResolvedValue({
+      commands: ["npm run test -- src/foo.test.ts"],
+      reason: "仅检测到测试相关变更，执行 lint/test 验证；检测到测试文件改动，优先运行受影响测试文件",
+      steps: [
+        {
+          kind: "test",
+          command: "npm run test -- src/foo.test.ts",
+          fallbackCommand: "npm run test",
+          targeted: true,
+        },
+      ],
+    });
+
+    let callCount = 0;
+    mockChatStream.mockImplementation(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          text: "",
+          toolCalls: [
+            {
+              id: "call-1",
+              name: "write_file",
+              argumentsText: '{"path":"src/foo.test.ts","content":"updated"}',
+            },
+          ],
+        };
+      }
+      if (callCount === 2) {
+        return { text: "", toolCalls: [] };
+      }
+      return { text: "完成。", toolCalls: [] };
+    });
+
+    const runCommandTool = fakeTools.find(
+      (tool) => tool.name === "run_command",
+    );
+    if (!runCommandTool) {
+      throw new Error("run_command tool not found");
+    }
+    const runCommandSpy = vi
+      .spyOn(runCommandTool, "execute")
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          command: "npm run test -- src/foo.test.ts",
+          exitCode: 1,
+          stdout: "",
+          stderr: "Unknown option '--runTestsByPath'",
+        }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          command: "npm run test",
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+      );
+
+    const agent = new AgentOrchestrator({
+      onConfirmCommand: vi.fn().mockResolvedValue(true),
+    });
+    const result = await agent.run("修复测试后自动验证");
+
+    expect(runCommandSpy).toHaveBeenNthCalledWith(1, {
+      command: "npm run test -- src/foo.test.ts",
+      confirmed: true,
+    });
+    expect(runCommandSpy).toHaveBeenNthCalledWith(2, {
+      command: "npm run test",
+      confirmed: true,
+    });
+    expect(
+      result.steps.some((step) => step.includes("回退到完整测试")),
+    ).toBe(true);
+    expect(result.finalText).toContain("完成");
+  });
+
+  it("失败测试时会根据输出重放受影响测试", async () => {
+    vi.spyOn(validationModule, "getValidationPlan").mockResolvedValue({
+      commands: ["npm run test"],
+      reason: "仅检测到测试相关变更，执行 lint/test 验证",
+      steps: [
+        {
+          kind: "test",
+          command: "npm run test",
+          targeted: false,
+          testRunner: "vitest",
+        },
+      ],
+    });
+
+    let callCount = 0;
+    mockChatStream.mockImplementation(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          text: "",
+          toolCalls: [
+            {
+              id: "call-1",
+              name: "write_file",
+              argumentsText: '{"path":"src/foo.ts","content":"updated"}',
+            },
+          ],
+        };
+      }
+      if (callCount === 2) {
+        return { text: "", toolCalls: [] };
+      }
+      return { text: "完成。", toolCalls: [] };
+    });
+
+    const runCommandTool = fakeTools.find(
+      (tool) => tool.name === "run_command",
+    );
+    if (!runCommandTool) {
+      throw new Error("run_command tool not found");
+    }
+    const runCommandSpy = vi
+      .spyOn(runCommandTool, "execute")
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          command: "npm run test",
+          exitCode: 1,
+          stdout: " FAIL  src/utils/token.test.ts",
+          stderr: "AssertionError",
+        }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          command: "npm run test -- src/utils/token.test.ts",
+          exitCode: 0,
+          stdout: "ok",
+          stderr: "",
+        }),
+      );
+
+    const agent = new AgentOrchestrator({
+      onConfirmCommand: vi.fn().mockResolvedValue(true),
+    });
+    const result = await agent.run("修复测试后自动验证");
+
+    expect(runCommandSpy).toHaveBeenNthCalledWith(1, {
+      command: "npm run test",
+      confirmed: true,
+    });
+    expect(runCommandSpy).toHaveBeenNthCalledWith(2, {
+      command: "npm run test -- src/utils/token.test.ts",
+      confirmed: true,
+    });
+    expect(
+      result.steps.some((step) => step.includes("根据失败输出重放受影响测试")),
+    ).toBe(true);
+    expect(result.finalText).toContain("完成");
+  });
+
   it("验证命令失败时会读取 diagnostics 并回灌修复", async () => {
     const diagnosticsSpy = vi
       .spyOn(validationModule, "getDiagnosticsForValidationCommand")

@@ -9,11 +9,41 @@ import { normalizeFilePath } from "../utils/path.js";
 const DEFAULT_VALIDATION_COMMAND = "npm run build";
 const VALIDATION_SCRIPT_ORDER = ["lint", "test", "build"] as const;
 const PLACEHOLDER_TEST_PATTERN = /no test specified|exit 1/i;
+const MAX_TARGETED_TEST_FILES = 6;
+const TARGETED_TEST_UNSUPPORTED_PATTERNS = [
+  /unknown option/i,
+  /unknown flag/i,
+  /unrecognized option/i,
+  /unexpected argument/i,
+  /unexpected value/i,
+  /does not support/i,
+  /unsupported option/i,
+];
 
 type PackageJson = { scripts?: Record<string, string> };
 type ValidationScriptName = (typeof VALIDATION_SCRIPT_ORDER)[number];
 
-type ValidationPlan = { commands: string[]; reason: string };
+type TestRunner = "vitest" | "jest";
+
+export type ValidationCommandStep = {
+  command: string;
+  fallbackCommand?: string;
+  kind: "lint" | "test" | "build";
+  targeted: boolean;
+  testRunner?: TestRunner;
+};
+
+export type ValidationPlan = {
+  commands: string[];
+  reason: string;
+  steps: ValidationCommandStep[];
+};
+
+type ValidationInference = {
+  scripts: Set<ValidationScriptName>;
+  reason: string;
+  testPaths: string[];
+};
 
 type ValidationDiagnostics = {
   command: string;
@@ -164,19 +194,18 @@ function isConfigPath(filePath: string): boolean {
   );
 }
 
-function inferValidationScripts(changedPaths: string[]): {
-  scripts: Set<ValidationScriptName>;
-  reason: string;
-} {
+function inferValidationScripts(changedPaths: string[]): ValidationInference {
   if (changedPaths.length === 0)
     return {
       scripts: new Set(VALIDATION_SCRIPT_ORDER),
       reason: "无法识别本轮修改文件，执行默认完整验证",
+      testPaths: [],
     };
   let sawConfig = false,
     sawSource = false,
     sawTests = false,
     sawNonDocChange = false;
+  const testPaths: string[] = [];
   for (const changedPath of changedPaths) {
     const normalized = normalizeFilePath(changedPath);
     if (isDocumentationPath(normalized)) continue;
@@ -187,6 +216,7 @@ function inferValidationScripts(changedPaths: string[]): {
     }
     if (isTestPath(normalized)) {
       sawTests = true;
+      testPaths.push(normalized);
       continue;
     }
     if (isSourcePath(normalized)) {
@@ -199,25 +229,30 @@ function inferValidationScripts(changedPaths: string[]): {
     return {
       scripts: new Set(),
       reason: "仅检测到文档或说明文件变更，跳过自动验证",
+      testPaths: [],
     };
   if (sawConfig)
     return {
       scripts: new Set(VALIDATION_SCRIPT_ORDER),
       reason: "检测到依赖或工具链配置变更，执行 lint/test/build 全量验证",
+      testPaths: [],
     };
   if (sawSource && sawTests)
     return {
       scripts: new Set<ValidationScriptName>(["lint", "test", "build"]),
       reason: "同时修改了源码和测试，执行完整验证",
+      testPaths,
     };
   if (sawSource)
     return {
       scripts: new Set<ValidationScriptName>(["lint", "build"]),
       reason: "检测到源码或配置文件变更，执行 lint/build 验证",
+      testPaths: [],
     };
   return {
     scripts: new Set<ValidationScriptName>(["lint", "test"]),
     reason: "仅检测到测试相关变更，执行 lint/test 验证",
+    testPaths,
   };
 }
 
@@ -243,12 +278,96 @@ async function detectPackageManager(): Promise<
   return "npm";
 }
 
+function quoteCommandArg(value: string): string {
+  if (/^[A-Za-z0-9_./:-]+$/.test(value)) return value;
+  return JSON.stringify(value);
+}
+
+function detectTestRunner(scriptCommand: string): TestRunner | null {
+  const normalizedScript = scriptCommand.trim();
+  if (/\bvitest\b/.test(normalizedScript)) return "vitest";
+  if (/\bjest\b/.test(normalizedScript)) return "jest";
+  return null;
+}
+
+function buildTargetedTestCommand(
+  packageManager: "npm" | "pnpm" | "yarn" | "bun",
+  scriptCommand: string,
+  testPaths: string[],
+): string | null {
+  const targets = Array.from(new Set(testPaths)).slice(0, MAX_TARGETED_TEST_FILES);
+  if (targets.length === 0) return null;
+
+  const testRunner = detectTestRunner(scriptCommand);
+  if (testRunner === "vitest") {
+    const pathArgs = targets.map(quoteCommandArg).join(" ");
+    return `${packageManager} run test -- ${pathArgs}`;
+  }
+
+  if (testRunner === "jest") {
+    const pathArgs = targets.map(quoteCommandArg).join(" ");
+    return `${packageManager} run test -- --runTestsByPath ${pathArgs}`;
+  }
+
+  return null;
+}
+
+function extractMatchingPaths(
+  text: string,
+  testRunner: TestRunner | undefined,
+): string[] {
+  const matches = new Set<string>();
+  const patterns = [
+    /(?:^|\s)(src\/[^\s:]+\.(?:test|spec)\.[^\s:]+)/gim,
+    /(?:^|\s)([^\s:]*\.(?:test|spec)\.[^\s:]+)/gim,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const filePath = normalizeFilePath(match[1]);
+      if (isTestPath(filePath)) {
+        matches.add(filePath);
+      }
+    }
+  }
+  if (testRunner === "jest") {
+    for (const match of text.matchAll(/(?:FAIL|PASS)\s+([^\s]+\.(?:test|spec)\.[^\s:]+)/g)) {
+      matches.add(normalizeFilePath(match[1]));
+    }
+  }
+  return Array.from(matches).slice(0, MAX_TARGETED_TEST_FILES);
+}
+
+export function getValidationReplayCommand(
+  step: ValidationCommandStep,
+  result: CommandResult | null,
+): string | null {
+  if (step.kind !== "test" || !result?.exitCode || result.exitCode === 0) return null;
+  if (!step.testRunner) return null;
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  const failedPaths = extractMatchingPaths(output, step.testRunner);
+  if (failedPaths.length === 0) return null;
+  const command = buildTargetedTestCommand("npm", `${step.testRunner} run`, failedPaths);
+  if (!command) return null;
+  return command.replace(/^npm run test/, step.fallbackCommand || step.command.split(" -- ")[0] || step.command);
+}
+
+export function shouldRetryValidationWithFallback(
+  command: string,
+  result: CommandResult | null,
+  fallbackCommand?: string,
+): boolean {
+  if (!fallbackCommand || !result?.exitCode || result.exitCode === 0) return false;
+  if (command === fallbackCommand) return false;
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  return TARGETED_TEST_UNSUPPORTED_PATTERNS.some((pattern) => pattern.test(output));
+}
+
 export async function getValidationPlan(
   changedPaths: string[],
 ): Promise<ValidationPlan> {
   const inferred = inferValidationScripts(changedPaths);
   if (inferred.scripts.size === 0)
-    return { commands: [], reason: inferred.reason };
+    return { commands: [], reason: inferred.reason, steps: [] };
   try {
     const packageJson = JSON.parse(
       await fs.readFile(path.join(process.cwd(), "package.json"), "utf8"),
@@ -261,19 +380,61 @@ export async function getValidationPlan(
         !(name === "test" && PLACEHOLDER_TEST_PATTERN.test(scripts[name])),
     );
     const selected = available.filter((name) => inferred.scripts.has(name));
-    if (selected.length > 0)
+    if (selected.length > 0) {
+      const steps: ValidationCommandStep[] = selected.map((name) => {
+        const defaultCommand = `${packageManager} run ${name}`;
+        if (name !== "test") {
+          return {
+            kind: name,
+            command: defaultCommand,
+            targeted: false,
+          };
+        }
+        const targetedCommand = buildTargetedTestCommand(
+          packageManager,
+          scripts[name],
+          inferred.testPaths,
+        );
+        return {
+          kind: name,
+          command: targetedCommand || defaultCommand,
+          fallbackCommand: targetedCommand ? defaultCommand : undefined,
+          targeted: Boolean(targetedCommand),
+          testRunner: detectTestRunner(scripts[name]) || undefined,
+        };
+      });
+      const targetedTestCount = steps.filter((step) => step.targeted).length;
       return {
-        commands: selected.map((name) => `${packageManager} run ${name}`),
-        reason: inferred.reason,
+        commands: steps.map((step) => step.command),
+        steps,
+        reason:
+          targetedTestCount > 0
+            ? `${inferred.reason}；检测到测试文件改动，优先运行受影响测试文件`
+            : inferred.reason,
       };
-    if (available.length > 0)
+    }
+    if (available.length > 0) {
+      const steps: ValidationCommandStep[] = available.map((name) => ({
+        kind: name,
+        command: `${packageManager} run ${name}`,
+        targeted: false,
+      }));
       return {
-        commands: available.map((name) => `${packageManager} run ${name}`),
+        commands: steps.map((step) => step.command),
+        steps,
         reason: `${inferred.reason}；未找到完全匹配的脚本，回退到项目内可用验证命令`,
       };
+    }
   } catch {}
   return {
     commands: [DEFAULT_VALIDATION_COMMAND],
+    steps: [
+      {
+        kind: "build",
+        command: DEFAULT_VALIDATION_COMMAND,
+        targeted: false,
+      },
+    ],
     reason: `${inferred.reason}；未找到项目脚本，回退到默认构建验证`,
   };
 }
