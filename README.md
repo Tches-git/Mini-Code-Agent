@@ -1,6 +1,6 @@
 # Mini Claude Code
 
-一个从零实现的本地 Code Agent CLI，具备完整的 LLM 工具调用闭环、多级安全策略、Git 工作流接入、结构化 diagnostics 和自动验证修复能力。
+一个可本地安装、通过环境变量完成配置的本地 Code Agent CLI，具备完整的 LLM 工具调用闭环、多级安全策略、Git 工作流接入、结构化 diagnostics 和自动验证修复能力。
 
 > 不是套壳聊天机器人，而是能真正完成“搜索 → 读取 → 修改 → 验证 → 提交”的本地代码助手。
 
@@ -94,6 +94,7 @@ flowchart LR
 - **Session Resume**：支持多会话持久化、会话列表、按 ID 恢复，让长任务可以中断后继续
 - **Security-first Execution**：命令执行采用 allow / confirm / block 三级策略，并配合外部路径确认和审计日志控制风险
 - **Eval-ready Benchmarking**：内置 benchmark、隔离执行和前置条件检查，可持续评估 read / edit 类任务表现
+- **CLI Packaging Baseline**：补齐 bin 入口、安装元数据、环境自检与面向最终用户的安装文档
 
 ## 适合简历的项目描述
 
@@ -253,26 +254,88 @@ if (isReadOnlyExplorationTurn && !hasModifiedFiles && maxIterations < EXTERNAL_A
 | `git_add` / `git_commit` | 暂存显式指定文件并提交 | 限制路径范围，不允许隐式全量暂存 |
 | `read_diagnostics` | 读取 TypeScript / Biome 结构化错误 | 统一输出文件、行号、级别、错误码 |
 
-## 快速开始
+## 安装与快速开始
+
+### 方式 1：作为全局 CLI 安装（发布到 npm 后）
+
+```bash
+npm install -g mini-claude-code
+mkdir my-project
+cd my-project
+mini-claude-code init
+```
+
+然后编辑生成的 `.env`，至少填写：
+
+```bash
+OPENAI_API_KEY=your-api-key-here
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# MODEL_NAME=gpt-5.4
+```
+
+当前仓库这一步对应的是“发布前打包能力准备”；在真正发布到 npm 之前，建议先使用下面的源码安装方式。
+
+如果你是从 GitHub 源码安装，也可以这样：
+
+```bash
+git clone https://github.com/Tches-git/Mini-Code-Agent.git
+cd Mini-Code-Agent
+npm install
+npm run build
+npm link
+mini-claude-code init
+```
+
+### 方式 2：在仓库内本地开发运行
 
 ```bash
 npm install
-cp .env.example .env   # 配置 API Key 和模型
+npm run init
+```
 
+### 初始化配置
+
+编辑 `.env`，至少填写：
+
+```bash
+OPENAI_API_KEY=your-api-key-here
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# MODEL_NAME=gpt-5.4
+```
+
+然后先执行环境自检：
+
+```bash
+mini-claude-code doctor
+# 或在源码仓库内运行 npm run doctor
+```
+
+### 常用命令
+
+```bash
 # 单次执行
-npm run dev -- "分析当前项目结构"
+mini-claude-code "分析当前项目结构"
 
 # 交互式多轮对话
-npm run chat
+mini-claude-code -i
 
 # 查询审批日志
-npm run dev -- approvals --decision rejected --after 7d
+mini-claude-code approvals --decision rejected --after 7d
 
 # 查看历史会话
-npm run dev -- sessions
+mini-claude-code sessions
 
 # 恢复指定会话进入交互模式
-npm run chat -- --resume-session <session-id>
+mini-claude-code -i --resume-session <session-id>
+```
+
+如果你仍在仓库内本地开发，也可以继续使用：
+
+```bash
+npm run init
+npm run dev -- "分析当前项目结构"
+npm run chat
+npm run doctor
 ```
 
 ### 交互模式
@@ -305,6 +368,8 @@ npm run chat -- --resume-session <session-id>
 | `/approvals [过滤]` | 查看审批日志 |
 | `/sessions` | 查看最近可恢复的历史会话 |
 | `/resume <id>` | 恢复指定会话 |
+| `/init` | 提示如何生成 `.env` 模板 |
+| `/doctor` | 提示如何运行环境自检 |
 | `/exit` | 退出 |
 
 ## Demo 场景
@@ -364,7 +429,7 @@ npm run chat -- --resume-session <session-id>
 |------|------|
 | `OPENAI_API_KEY` | API Key（必填） |
 | `OPENAI_BASE_URL` | API 端点（可选，用于兼容端点） |
-| `MODEL_NAME` | 模型名称，默认 `gpt-4o` |
+| `MODEL_NAME` | 模型名称，默认 `gpt-5.4` |
 | `RUN_COMMAND_ALLOWLIST` | 额外允许的命令规则，`;` 分隔，支持 `*` 前缀匹配 |
 | `RUN_COMMAND_GUARDLIST` | 额外需确认的命令规则 |
 | `RUN_COMMAND_BLOCKLIST` | 额外阻止的命令规则 |
@@ -389,6 +454,8 @@ npm test              # 运行全部测试
 npm run test:watch    # watch 模式
 npm run build         # TypeScript 构建
 npm run lint          # Biome 检查
+npm run init          # 生成本地 .env 模板
+npm run doctor        # 本地环境 / 配置自检
 npm run check         # lint + test + build 聚合校验
 ```
 

@@ -125,4 +125,28 @@ describe("startInteractive", () => {
       expect.stringContaining("已恢复会话 saved-1"),
     );
   });
+
+  it("/init prints setup guidance", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/init")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("mini-claude-code init"),
+    );
+  });
+
+  it("/doctor prints setup guidance", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/doctor")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining("mini-claude-code doctor"),
+    );
+  });
 });

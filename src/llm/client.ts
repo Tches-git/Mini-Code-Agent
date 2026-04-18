@@ -1,7 +1,10 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
 import type { ChatMessage, ToolDefinition } from "../types/agent.js";
-import { getEnv } from "./env.js";
+import {
+  DEFAULT_MODEL_NAME,
+  getEnv,
+} from "./env.js";
 
 export type ToolCall = {
   id: string;
@@ -47,7 +50,7 @@ export class LlmClient {
       ? { baseURL: process.env.OPENAI_BASE_URL }
       : {}),
   });
-  private model = process.env.MODEL_NAME || "gpt-5.4";
+  private model = process.env.MODEL_NAME || DEFAULT_MODEL_NAME;
 
   private shouldFallbackToNonStream(error: unknown): boolean {
     if (!(error instanceof Error)) return false;

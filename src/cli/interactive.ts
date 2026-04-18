@@ -28,6 +28,8 @@ const SLASH_COMMANDS = {
   "/approvals": "查看审批记录，可用 decision:/action:/path:/after: 等过滤",
   "/sessions": "查看可恢复的历史会话",
   "/resume <id>": "恢复指定会话 ID 的上下文",
+  "/init": "提示使用 init 子命令生成 .env 模板",
+  "/doctor": "提示使用 doctor 子命令检查安装与环境配置",
 };
 
 function getSlashCommandName(input: string): string | null {
@@ -263,6 +265,18 @@ export async function startInteractive(options?: {
     }
     if (slashCommand === "/help") {
       printHelp();
+      continue;
+    }
+    if (slashCommand === "/init") {
+      console.log(
+        chalk.gray("  请在终端中运行 `mini-claude-code init` 生成 .env 模板。\n"),
+      );
+      continue;
+    }
+    if (slashCommand === "/doctor") {
+      console.log(
+        chalk.gray("  请在终端中运行 `mini-claude-code doctor` 检查安装与环境配置。\n"),
+      );
       continue;
     }
     if (slashCommand === "/approvals") {

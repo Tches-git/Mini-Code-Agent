@@ -1,6 +1,9 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { Command } from "commander";
+import { execa } from "execa";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
+import { getRuntimeEnvInfo, writeEnvTemplate } from "../llm/env.js";
 import {
   logDiffHeader,
   logDiffLine,
@@ -24,6 +27,144 @@ function parsePositiveInteger(value: string): number {
   }
   return parsed;
 }
+
+async function runInitCommand(options: { force?: boolean }) {
+  try {
+    const result = await writeEnvTemplate({ force: Boolean(options.force) });
+    logSection("初始化完成");
+    logSuccess(
+      `${result.overwritten ? "已覆盖" : "已创建"} ${result.path}`,
+    );
+    logLine(
+      "下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `mini-claude-code doctor`。",
+    );
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "EEXIST"
+    ) {
+      logSection("初始化失败");
+      logError("当前目录已存在 .env；如需覆盖，请追加 --force。");
+      process.exitCode = 1;
+      return;
+    }
+    throw error;
+  }
+}
+
+async function runDoctorCommand(options: { json?: boolean }) {
+  const runtime = getRuntimeEnvInfo();
+  const checks: Array<{
+    name: string;
+    ok: boolean;
+    detail: string;
+    required?: boolean;
+  }> = [
+    {
+      name: "Node.js >= 18",
+      ok: Number.parseInt(process.versions.node.split(".")[0] || "0", 10) >= 18,
+      detail: `当前版本 ${process.versions.node}`,
+      required: true,
+    },
+    {
+      name: "已检测到 package.json",
+      ok: existsSync("package.json"),
+      detail: existsSync("package.json")
+        ? "当前目录看起来是一个项目工作区"
+        : "建议在目标项目目录中运行此命令",
+    },
+    {
+      name: ".env 文件",
+      ok: runtime.hasEnvFile,
+      detail: runtime.hasEnvFile
+        ? `已检测到 ${runtime.envFilePath}`
+        : `未检测到 ${runtime.envFilePath}`,
+    },
+    {
+      name: "OPENAI_API_KEY",
+      ok: runtime.openaiApiKeyConfigured,
+      detail: runtime.openaiApiKeyConfigured
+        ? "已配置"
+        : "未配置（必填）",
+      required: true,
+    },
+    {
+      name: "OPENAI_BASE_URL",
+      ok: true,
+      detail: runtime.openaiBaseUrl || "未设置（将使用官方默认端点）",
+    },
+    {
+      name: "MODEL_NAME",
+      ok: true,
+      detail: runtime.modelName,
+    },
+  ];
+
+  try {
+    const result = await execa("rg", ["--version"]);
+    checks.push({
+      name: "ripgrep (rg)",
+      ok: true,
+      detail: result.stdout.split("\n")[0] || "已安装",
+    });
+  } catch {
+    checks.push({
+      name: "ripgrep (rg)",
+      ok: false,
+      detail: "未安装；search_text 会回退到 Node.js 遍历，性能可能较差",
+    });
+  }
+
+  const allRequiredChecksPassed = checks.every(
+    (check) => !check.required || check.ok,
+  );
+
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: allRequiredChecksPassed,
+          checks,
+        },
+        null,
+        2,
+      ),
+    );
+    if (!allRequiredChecksPassed) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  logSection("环境自检");
+  for (const check of checks) {
+    (check.ok ? logSuccess : logError)(`${check.name}: ${check.detail}`);
+  }
+  if (!runtime.openaiApiKeyConfigured) {
+    logLine("提示: 可先运行 `mini-claude-code init` 生成 .env，再填写 OPENAI_API_KEY。");
+  }
+  if (!allRequiredChecksPassed) {
+    process.exitCode = 1;
+  }
+}
+
+program
+  .command("init")
+  .description("在当前目录生成 .env 配置模板")
+  .option("-f, --force", "覆盖已有 .env")
+  .action(async (options: { force?: boolean }) => {
+    await runInitCommand({ force: Boolean(options.force) });
+  });
+
+program
+  .command("doctor")
+  .description("检查本地 CLI 运行环境与配置")
+  .option("--json", "以 JSON 输出")
+  .action(async (options: { json?: boolean }) => {
+    await runDoctorCommand({ json: Boolean(options.json) });
+  });
 
 program
   .command("approvals")

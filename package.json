@@ -1,8 +1,35 @@
 {
   "name": "mini-claude-code",
   "version": "0.1.0",
-  "private": true,
+  "description": "A local code agent CLI with tool calling, guarded command execution, diagnostics-driven validation, and session resume.",
   "type": "module",
+  "bin": {
+    "mini-claude-code": "dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tches-git/Mini-Code-Agent.git"
+  },
+  "homepage": "https://github.com/Tches-git/Mini-Code-Agent#readme",
+  "bugs": {
+    "url": "https://github.com/Tches-git/Mini-Code-Agent/issues"
+  },
+  "keywords": [
+    "cli",
+    "agent",
+    "code-agent",
+    "llm",
+    "openai",
+    "typescript"
+  ],
   "scripts": {
     "dev": "tsx src/cli/index.ts",
     "chat": "tsx src/cli/index.ts -i",
@@ -14,6 +41,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "benchmark": "tsx src/cli/index.ts benchmark",
+    "init": "tsx src/cli/index.ts init",
+    "doctor": "tsx src/cli/index.ts doctor",
     "check": "npm run lint && npm test && npm run build"
   },
   "dependencies": {
