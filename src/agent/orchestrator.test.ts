@@ -31,6 +31,17 @@ const fakeTools = vi.hoisted(() => {
       },
     },
     {
+      name: "project_map",
+      description: "项目结构地图",
+      inputSchema: {
+        type: "object",
+        properties: { path: { type: "string" } },
+      },
+      async execute(input: Record<string, unknown>) {
+        return `项目地图: ${input.path || "."}`;
+      },
+    },
+    {
       name: "write_file",
       description: "写入文件",
       inputSchema: {
@@ -149,6 +160,29 @@ describe("AgentOrchestrator", () => {
     const result = await agent.run("读取 src/index.ts");
     expect(result.finalText).toContain("文件内容");
     expect(result.steps.some((s) => s.includes("read_file"))).toBe(true);
+  });
+
+  it("分析项目结构任务时会注入 project_map 提示", async () => {
+    mockChatStream.mockImplementationOnce(async (msgs: Array<{ role: string; content?: string | null }>) => {
+      expect(msgs.some((msg) => msg.content?.includes("优先考虑先调用 project_map"))).toBe(true);
+      return {
+        text: "",
+        toolCalls: [
+          {
+            id: "call-1",
+            name: "project_map",
+            argumentsText: '{"path":"src"}',
+          },
+        ],
+      };
+    });
+    mockChatStream.mockResolvedValueOnce({ text: "项目结构如下。", toolCalls: [] });
+
+    const agent = new AgentOrchestrator();
+    const result = await agent.run("分析这个项目的结构和入口");
+    expect(result.steps).toContain("已提示模型优先使用 project_map 理解项目结构");
+    expect(result.steps.some((step) => step.includes("project_map"))).toBe(true);
+    expect(result.finalText).toContain("项目结构如下");
   });
 
   it("工具执行失败后错误回传到消息中", async () => {

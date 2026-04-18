@@ -6,6 +6,19 @@ import type { ToolDefinition } from "../types/agent.js";
 import { createTool } from "./create-tool.js";
 
 const MAX_MATCHES = 50;
+const MAX_PROJECT_MAP_FILES = 40;
+const DEFAULT_PROJECT_MAP_EXTENSIONS = [
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".mts",
+  ".cts",
+  ".svelte",
+  ".vue",
+];
 const IGNORED_DIRECTORIES = new Set([
   "node_modules",
   ".git",
@@ -29,6 +42,12 @@ type SearchFilters = {
   excludeGlobs: string[];
   contextLines: number;
   maxResults: number;
+};
+
+type ProjectMapEntry = {
+  path: string;
+  symbols: string[];
+  score: number;
 };
 
 function shouldSkipEntry(entryName: string): boolean {
@@ -433,9 +452,74 @@ async function enrichMatchesWithContext(
   return matches;
 }
 
-export type { SearchFilters, SearchMatch };
+function extractTopLevelSymbols(content: string): string[] {
+  const patterns = [
+    /export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g,
+    /(?:^|\n)(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|function\b)/g,
+    /export\s+class\s+([A-Za-z_$][\w$]*)/g,
+    /export\s+interface\s+([A-Za-z_$][\w$]*)/g,
+    /export\s+type\s+([A-Za-z_$][\w$]*)/g,
+    /export\s+enum\s+([A-Za-z_$][\w$]*)/g,
+  ];
+  const symbols = new Set<string>();
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      symbols.add(match[1]);
+      if (symbols.size >= 12) {
+        return Array.from(symbols);
+      }
+    }
+  }
+  return Array.from(symbols);
+}
+
+function scoreProjectMapEntry(filePath: string, symbols: string[]): number {
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  let score = Math.max(1, 12 - normalizedPath.split("/").length);
+  if (/\/index\.[^.]+$/.test(normalizedPath)) score += 3;
+  if (/\/(cli|agent|tools|llm)\//.test(normalizedPath)) score += 2;
+  if (symbols.length > 0) score += Math.min(6, symbols.length);
+  return score;
+}
+
+async function buildProjectMap(
+  targetPath: string,
+  confirmed = false,
+  maxFiles = MAX_PROJECT_MAP_FILES,
+): Promise<ProjectMapEntry[]> {
+  const resolved = resolveSearchRoot(targetPath, confirmed);
+  const filters = normalizeSearchFilters({
+    extensions: DEFAULT_PROJECT_MAP_EXTENSIONS,
+    maxResults: maxFiles,
+  });
+  const files = await walk(resolved.fullPath, filters, resolved.fullPath);
+  const entries: ProjectMapEntry[] = [];
+
+  for (const file of files) {
+    try {
+      const content = await fs.readFile(file, "utf8");
+      const displayPath = toDisplayPath(resolved.fullPath, file);
+      const symbols = extractTopLevelSymbols(content);
+      entries.push({
+        path: displayPath,
+        symbols,
+        score: scoreProjectMapEntry(displayPath, symbols),
+      });
+    } catch {
+      continue;
+    }
+  }
+
+  return entries
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+    .slice(0, maxFiles);
+}
+
+export type { ProjectMapEntry, SearchFilters, SearchMatch };
 export {
   buildContext,
+  buildProjectMap,
+  extractTopLevelSymbols,
   globToRegExp,
   matchesGlobPattern,
   matchesSearchFilters,
@@ -444,6 +528,7 @@ export {
   normalizeSearchFilters,
   parseRipgrepOutput,
   scoreMatch,
+  scoreProjectMapEntry,
   shouldSkipEntry,
   sortMatches,
 };
@@ -526,6 +611,41 @@ export const searchTools: ToolDefinition[] = [
         filters.contextLines,
       );
       return JSON.stringify(enrichedMatches, null, 2);
+    },
+  }),
+  createTool({
+    name: "project_map",
+    description:
+      "生成项目结构地图，返回关键源码文件及其顶层符号，帮助快速理解仓库结构；可限定目录范围",
+    schema: z.object({
+      path: z.string().optional(),
+      maxFiles: z.number().int().min(1).max(100).optional(),
+      confirmed: z.boolean().optional(),
+    }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "可选，限定生成项目地图的目录，默认当前工作区",
+        },
+        maxFiles: {
+          type: "number",
+          description: "可选，最多返回多少个关键文件，范围 1-100",
+        },
+        confirmed: {
+          type: "boolean",
+          description: "仅当用户已明确确认读取工作区外目录时才传 true",
+        },
+      },
+    },
+    async execute(input) {
+      const entries = await buildProjectMap(
+        input.path || ".",
+        input.confirmed,
+        input.maxFiles,
+      );
+      return JSON.stringify(entries, null, 2);
     },
   }),
 ];

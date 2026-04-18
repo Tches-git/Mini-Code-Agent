@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildContext,
+  buildProjectMap,
+  extractTopLevelSymbols,
   globToRegExp,
   matchesGlobPattern,
   matchesSearchFilters,
@@ -11,6 +13,7 @@ import {
   type SearchFilters,
   type SearchMatch,
   scoreMatch,
+  scoreProjectMapEntry,
   shouldSkipEntry,
   sortMatches,
 } from "./search.js";
@@ -312,5 +315,37 @@ describe("parseRipgrepOutput", () => {
 
   it("空输出返回空数组", () => {
     expect(parseRipgrepOutput("", baseDir, emptyFilters)).toEqual([]);
+  });
+});
+
+describe("project map helpers", () => {
+  it("提取顶层导出符号", () => {
+    const content = [
+      "export function run() {}",
+      "export const createAgent = () => {};",
+      "export class Agent {}",
+      "export type AgentConfig = {};",
+    ].join("\n");
+    expect(extractTopLevelSymbols(content)).toEqual([
+      "run",
+      "createAgent",
+      "Agent",
+      "AgentConfig",
+    ]);
+  });
+
+  it("关键文件和符号越多分数越高", () => {
+    expect(scoreProjectMapEntry("src/agent/index.ts", ["a", "b"])).toBeGreaterThan(
+      scoreProjectMapEntry("src/deep/nested/file.ts", []),
+    );
+  });
+
+  it("可以生成当前项目的 project map", async () => {
+    const result = await buildProjectMap("src", false, 5);
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.length).toBeLessThanOrEqual(5);
+    expect(result[0]).toHaveProperty("path");
+    expect(result[0]).toHaveProperty("symbols");
+    expect(result[0]).toHaveProperty("score");
   });
 });

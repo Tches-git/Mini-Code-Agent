@@ -19,6 +19,7 @@ const EXTERNAL_PATH_TOOL_ACTIONS: Partial<
   insert_after: "write",
   replace_text: "write",
   search_text: "search",
+  project_map: "read",
 };
 
 export class ApprovalManager {

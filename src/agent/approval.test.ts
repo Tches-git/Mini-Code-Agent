@@ -90,6 +90,17 @@ describe("ApprovalManager", () => {
     );
   });
 
+  it("project_map 访问工作区外目录时也要求确认", async () => {
+    const steps: string[] = [];
+    const manager = new ApprovalManager();
+    await expect(
+      manager.confirmExternalPathAccess("project_map", "/tmp/project", steps),
+    ).resolves.toBe(false);
+    expect(
+      steps.some((step) => step.includes("工作区外路径") || step.includes("读取")),
+    ).toBe(true);
+  });
+
   it("外部文件导入确认通过后记录 approved", async () => {
     const onConfirm = vi.fn().mockResolvedValue(true);
     const manager = new ApprovalManager(onConfirm);

@@ -72,12 +72,14 @@ const READ_ONLY_TOOLS = new Set([
   "list_files",
   "read_file",
   "search_text",
+  "project_map",
   "import_external_file",
 ]);
 const PARALLELIZABLE_TOOLS = new Set([
   "list_files",
   "read_file",
   "search_text",
+  "project_map",
 ]);
 
 function normalizeToolResult(raw: string | ToolResult): {
@@ -88,10 +90,7 @@ function normalizeToolResult(raw: string | ToolResult): {
   return { message: raw.message, diff: raw.diff };
 }
 
-function getExecutionBudget(userTask: string): {
-  limit: number;
-  reason: string;
-} {
+function analyzeTaskIntent(userTask: string) {
   const normalized = userTask.toLowerCase();
   const hasWriteIntent =
     /(修改|编辑|修复|实现|新增|重构|更新|追加|替换|写入|生成|创建|删除|fix|edit|modify|write|append|replace|implement|create|refactor|update|generate|delete)/i.test(
@@ -107,9 +106,36 @@ function getExecutionBudget(userTask: string): {
       normalized,
     );
   const mentionsProjectScope =
-    /(项目|工程|代码库|仓库|目录|文件夹|repo|repository|project|codebase|workspace|folder|directory)/i.test(
+    /(项目|工程|代码库|仓库|目录|文件夹|repo|repository|project|codebase|workspace|folder|directory|架构|structure|module|入口|entry)/i.test(
       normalized,
     );
+  return {
+    hasWriteIntent,
+    hasAnalysisIntent,
+    mentionsExternalPath,
+    mentionsProjectScope,
+  };
+}
+
+function shouldPreferProjectMap(userTask: string): boolean {
+  const intent = analyzeTaskIntent(userTask);
+  return (
+    !intent.hasWriteIntent &&
+    intent.hasAnalysisIntent &&
+    intent.mentionsProjectScope
+  );
+}
+
+function getExecutionBudget(userTask: string): {
+  limit: number;
+  reason: string;
+} {
+  const {
+    hasWriteIntent,
+    hasAnalysisIntent,
+    mentionsExternalPath,
+    mentionsProjectScope,
+  } = analyzeTaskIntent(userTask);
 
   if (hasWriteIntent)
     return {
@@ -566,6 +592,16 @@ export class AgentOrchestrator {
     this.rememberMessageFocus(userMessage);
     const steps: string[] = [];
     const diffs: DiffEntry[] = [];
+    if (shouldPreferProjectMap(userTask)) {
+      const projectMapHint: ChatMessage = {
+        role: "assistant",
+        content:
+          "分析项目结构、关键模块或代码入口时，优先考虑先调用 project_map，再按需结合 search_text/read_file 深入查看。",
+      };
+      this.messages.push(projectMapHint);
+      this.rememberMessageFocus(projectMapHint);
+      steps.push("已提示模型优先使用 project_map 理解项目结构");
+    }
     const modifiedPaths = new Set<string>();
     let hasModifiedFiles = false;
     let hasValidated = false;
