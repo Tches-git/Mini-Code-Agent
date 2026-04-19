@@ -258,10 +258,21 @@ if (isReadOnlyExplorationTurn && !hasModifiedFiles && maxIterations < EXTERNAL_A
 
 ### 方式 1：作为全局 CLI 安装（发布到 npm 后）
 
+macOS / Linux:
+
 ```bash
 npm install -g mini-claude-code
 mkdir my-project
 cd my-project
+mini-claude-code init
+```
+
+Windows PowerShell:
+
+```powershell
+npm install -g mini-claude-code
+mkdir my-project
+Set-Location my-project
 mini-claude-code init
 ```
 
@@ -303,6 +314,8 @@ OPENAI_API_KEY=your-api-key-here
 # MODEL_NAME=gpt-5.4
 ```
 
+Windows 用户如果全局命令未立即生效，先重新打开 PowerShell，或确认 npm global bin 已加入 PATH。
+
 然后先执行环境自检：
 
 ```bash
@@ -313,11 +326,20 @@ mini-claude-code doctor
 ### 常用命令
 
 ```bash
+# 查看 CLI 版本
+mini-claude-code --version
+
 # 单次执行
 mini-claude-code "分析当前项目结构"
 
 # 交互式多轮对话
 mini-claude-code -i
+
+# 初始化配置模板
+mini-claude-code init
+
+# 环境自检
+mini-claude-code doctor
 
 # 查询审批日志
 mini-claude-code approvals --decision rejected --after 7d
@@ -336,6 +358,14 @@ npm run init
 npm run dev -- "分析当前项目结构"
 npm run chat
 npm run doctor
+```
+
+也可以直接查看命令帮助：
+
+```bash
+mini-claude-code --help
+mini-claude-code init --help
+mini-claude-code doctor --help
 ```
 
 ### 交互模式
@@ -456,8 +486,56 @@ npm run build         # TypeScript 构建
 npm run lint          # Biome 检查
 npm run init          # 生成本地 .env 模板
 npm run doctor        # 本地环境 / 配置自检
+npm run pack:check    # 预览 npm 包内容
 npm run check         # lint + test + build 聚合校验
 ```
+
+## 发布前检查
+
+```bash
+npm run build
+npm run pack:check
+npm run pack:verify
+# 或直接运行 npm run release:check
+```
+
+`pack:verify` 会用 `npm pack --dry-run --json` 检查最终包内容，当前至少保证：
+
+- 包内存在 `dist/cli/index.js`
+- 包内不包含 `*.test.js` 测试产物
+
+如果检查输出里仍出现测试产物或不该发布的文件，再调整 `tsconfig.json`、`files` 或打包脚本；确认无误后再执行正式发布。
+
+## 版本与发布流程
+
+```bash
+# 1) 确认工作区干净
+git status
+
+# 2) 查看当前 CLI 版本
+mini-claude-code --version
+
+# 3) 更新版本号（示例）
+npm version patch
+
+# 4) 再做一次发布前校验
+npm run release:check
+
+# 5) 推送 commit 和 tag
+git push origin main --follow-tags
+```
+
+如果你配置了 GitHub Actions 的 `NPM_TOKEN` secret，推送 `v*.*.*` tag 后会自动触发 `.github/workflows/release.yml`：
+
+- 执行 `npm ci`
+- 执行 `npm run release:check`
+- 校验通过后执行 `npm publish`
+
+也可以在 GitHub Actions 页面手动触发同一个 release workflow。
+
+在仓库 Settings → Secrets and variables → Actions 中添加 `NPM_TOKEN` 后，自动发布链路才会生效。
+
+如果暂时还没发布 npm，也建议至少先跑完 `npm run release:check`，把它当作发布候选版本的基线检查。
 
 当前已覆盖的代表性模块包括：
 

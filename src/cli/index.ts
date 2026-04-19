@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { Command } from "commander";
 import { execa } from "execa";
+import { fileURLToPath } from "node:url";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { getRuntimeEnvInfo, writeEnvTemplate } from "../llm/env.js";
 import {
@@ -19,6 +20,37 @@ import { startInteractive } from "./interactive.js";
 import { printSessionDetail, printSessions } from "./sessions.js";
 
 const program = new Command();
+
+function getCliVersion(): string {
+  const packageJsonPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+      version?: string;
+    };
+    return packageJson.version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+const CLI_VERSION = getCliVersion();
+
+function configureHelp() {
+  program.showHelpAfterError(
+    "\n示例: mini-claude-code init && mini-claude-code doctor",
+  );
+  program.addHelpText(
+    "after",
+    `
+示例:
+  $ mini-claude-code --version
+  $ mini-claude-code init
+  $ mini-claude-code doctor
+  $ mini-claude-code -i
+  $ mini-claude-code "分析当前项目结构"
+`,
+  );
+}
 
 function parsePositiveInteger(value: string): number {
   const parsed = Number.parseInt(value, 10);
@@ -62,6 +94,11 @@ async function runDoctorCommand(options: { json?: boolean }) {
     detail: string;
     required?: boolean;
   }> = [
+    {
+      name: "CLI 版本",
+      ok: true,
+      detail: CLI_VERSION,
+    },
     {
       name: "Node.js >= 18",
       ok: Number.parseInt(process.versions.node.split(".")[0] || "0", 10) >= 18,
@@ -154,6 +191,10 @@ program
   .command("init")
   .description("在当前目录生成 .env 配置模板")
   .option("-f, --force", "覆盖已有 .env")
+  .addHelpText(
+    "after",
+    "\n下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `mini-claude-code doctor`。\n",
+  )
   .action(async (options: { force?: boolean }) => {
     await runInitCommand({ force: Boolean(options.force) });
   });
@@ -162,6 +203,10 @@ program
   .command("doctor")
   .description("检查本地 CLI 运行环境与配置")
   .option("--json", "以 JSON 输出")
+  .addHelpText(
+    "after",
+    "\n建议先运行 `mini-claude-code init` 生成 .env，再执行 doctor。\n",
+  )
   .action(async (options: { json?: boolean }) => {
     await runDoctorCommand({ json: Boolean(options.json) });
   });
@@ -279,9 +324,12 @@ program
     await printSessionDetail(id, { json: Boolean(options.json) });
   });
 
+configureHelp();
+
 program
   .name("mini-claude-code")
   .description("一个最小可运行的本地代码 Agent")
+  .version(CLI_VERSION)
   .argument("[task]", "要执行的任务（不传则进入交互模式）")
   .option("-i, --interactive", "进入交互式会话模式")
   .option("-y, --yes", "自动确认需要批准的命令")
