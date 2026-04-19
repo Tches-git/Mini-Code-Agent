@@ -328,7 +328,7 @@ configureHelp();
 
 program
   .name("mini-claude-code")
-  .description("一个最小可运行的本地代码 Agent")
+  .description("一个可本地安装的代码 Agent CLI")
   .version(CLI_VERSION)
   .argument("[task]", "要执行的任务（不传则进入交互模式）")
   .option("-i, --interactive", "进入交互式会话模式")

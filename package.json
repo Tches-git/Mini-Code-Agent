@@ -1,7 +1,7 @@
 {
   "name": "mini-claude-code",
   "version": "0.1.0",
-  "description": "A local code agent CLI with tool calling, guarded command execution, diagnostics-driven validation, and session resume.",
+  "description": "A locally installable code agent CLI with tool calling, guarded command execution, diagnostics-driven validation, and session resume.",
   "type": "module",
   "bin": {
     "mini-claude-code": "dist/cli/index.js"

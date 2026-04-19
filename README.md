@@ -8,6 +8,12 @@
 
 **License**：MIT
 
+## 当前状态
+
+- 已完成可安装 CLI 的基础包装与发布前校验链路
+- 已验证本地 tarball 打包、全局安装和首次使用流程
+- 当前以 GitHub 源码仓库 / 本地打包安装为主，暂不以 npm 公开发布为当前目标
+
 ## Why this project
 
 - 面向真实开发流程，而不只是聊天问答
@@ -258,12 +264,22 @@ if (isReadOnlyExplorationTurn && !hasModifiedFiles && maxIterations < EXTERNAL_A
 
 ## 安装与快速开始
 
-### 方式 1：作为全局 CLI 安装（发布到 npm 后）
+### 方式 1：通过本地打包结果安装（当前推荐）
+
+先在源码仓库中打包：
+
+```bash
+npm install
+npm run build
+npm pack
+```
+
+然后在目标机器或当前机器中安装生成的 tarball：
 
 macOS / Linux:
 
 ```bash
-npm install -g mini-claude-code
+npm install -g ./mini-claude-code-0.1.0.tgz
 mkdir my-project
 cd my-project
 mini-claude-code init
@@ -272,7 +288,7 @@ mini-claude-code init
 Windows PowerShell:
 
 ```powershell
-npm install -g mini-claude-code
+npm install -g .\mini-claude-code-0.1.0.tgz
 mkdir my-project
 Set-Location my-project
 mini-claude-code init
@@ -286,9 +302,7 @@ OPENAI_API_KEY=your-api-key-here
 # MODEL_NAME=gpt-5.4
 ```
 
-当前仓库这一步对应的是“发布前打包能力准备”；在真正发布到 npm 之前，建议先使用下面的源码安装方式。
-
-如果你是从 GitHub 源码安装，也可以这样：
+如果你不想安装 tarball，也可以直接从 GitHub 源码仓库运行：
 
 ```bash
 git clone https://github.com/Tches-git/Mini-Code-Agent.git
@@ -492,7 +506,7 @@ npm run pack:check    # 预览 npm 包内容
 npm run check         # lint + test + build 聚合校验
 ```
 
-## 发布前检查
+## 发布前检查（已具备，但当前不是主路径）
 
 ```bash
 npm run build
@@ -510,7 +524,7 @@ npm run pack:verify
 
 如果检查输出里仍出现测试产物或不该发布的文件，再调整 `tsconfig.json`、`files` 或打包脚本；确认无误后再执行正式发布。
 
-## 版本与发布流程
+## 版本与发布流程（保留为后续可选项）
 
 ```bash
 # 1) 确认工作区干净
