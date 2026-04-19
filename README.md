@@ -14,7 +14,8 @@
 
 - 已完成 CLI 打包、帮助信息、环境初始化与自检流程
 - 已验证本地 tarball 安装、全局运行和首次使用闭环
-- 当前推荐通过 GitHub 源码仓库或本地 tarball 安装使用
+- 已具备 GitHub Releases 可下载资产的自动上传 workflow
+- 当前推荐通过 GitHub Releases 下载 tarball 或源码仓库运行
 
 ## Highlights
 
@@ -48,17 +49,9 @@ flowchart LR
 
 ## 快速开始
 
-### 方式 1：通过本地打包结果安装（当前推荐）
+### 方式 1：通过 GitHub Releases 下载 tarball（推荐给最终用户）
 
-先在源码仓库中打包：
-
-```bash
-npm install
-npm run build
-npm pack
-```
-
-然后安装生成的 tarball：
+在 GitHub Releases 页面下载对应版本的 `mini-claude-code-<version>.tgz`，然后本地安装：
 
 **macOS / Linux**
 
@@ -78,7 +71,16 @@ Set-Location my-project
 mini-claude-code init
 ```
 
-### 方式 2：直接从源码仓库运行
+### 方式 2：本地打包后安装
+
+```bash
+npm install
+npm run build
+npm pack
+npm install -g ./mini-claude-code-0.1.0.tgz
+```
+
+### 方式 3：直接从源码仓库运行
 
 ```bash
 git clone https://github.com/Tches-git/Mini-Code-Agent.git
@@ -201,6 +203,7 @@ npm run pack:verify
 - `mini-claude-code --version`
 - `mini-claude-code doctor --json`
 - 全新空目录首次使用流程：`init` → `doctor`
+- Release workflow 已可在 GitHub Release 中上传 `.tgz` 资产
 
 ## Benchmark
 
