@@ -22,6 +22,7 @@
   "bugs": {
     "url": "https://github.com/Tches-git/Mini-Code-Agent/issues"
   },
+  "license": "MIT",
   "keywords": [
     "cli",
     "agent",

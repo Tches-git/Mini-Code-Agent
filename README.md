@@ -6,6 +6,8 @@
 
 **技术栈**：TypeScript · Node.js (ESM) · OpenAI SDK（兼容协议）· Commander · Zod · Vitest
 
+**License**：MIT
+
 ## Why this project
 
 - 面向真实开发流程，而不只是聊天问答
@@ -504,7 +506,7 @@ npm run pack:verify
 - 包内存在 `dist/cli/index.js`
 - 包内不包含 `*.test.js` 测试产物
 
-另外，本项目已经做过一次真实的本地 tarball 安装验证：先 `npm pack`，再本地 `npm install -g ./mini-claude-code-0.1.0.tgz`，并确认 `mini-claude-code --version`、`mini-claude-code doctor --json` 可以正常运行。
+另外，本项目已经做过一次真实的本地 tarball 安装验证：先 `npm pack`，再本地 `npm install -g ./mini-claude-code-0.1.0.tgz`，并确认 `mini-claude-code --version`、`mini-claude-code doctor --json`、`mini-claude-code init --help` 可以正常运行；同时在全新空目录里验证了首次使用流程（`init` → `doctor`）。
 
 如果检查输出里仍出现测试产物或不该发布的文件，再调整 `tsconfig.json`、`files` 或打包脚本；确认无误后再执行正式发布。
 

@@ -15,6 +15,12 @@ export type RuntimeEnvInfo = {
   modelName: string;
 };
 
+function isConfiguredValue(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized !== "your-api-key-here";
+}
+
 export function getEnvFilePath(cwd = process.cwd()): string {
   return path.resolve(cwd, DEFAULT_ENV_FILE_NAME);
 }
@@ -55,7 +61,7 @@ export function getRuntimeEnvInfo(): RuntimeEnvInfo {
   return {
     envFilePath,
     hasEnvFile: existsSync(envFilePath),
-    openaiApiKeyConfigured: Boolean(process.env.OPENAI_API_KEY?.trim()),
+    openaiApiKeyConfigured: isConfiguredValue(process.env.OPENAI_API_KEY),
     openaiBaseUrl: process.env.OPENAI_BASE_URL?.trim() || null,
     modelName: process.env.MODEL_NAME?.trim() || DEFAULT_MODEL_NAME,
   };
@@ -74,8 +80,8 @@ function getMissingEnvMessage(name: string): string {
 
 export function getEnv(name: string): string {
   const value = process.env[name]?.trim();
-  if (!value) {
+  if (!isConfiguredValue(value)) {
     throw new Error(getMissingEnvMessage(name));
   }
-  return value;
+  return value as string;
 }
