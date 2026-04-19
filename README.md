@@ -94,7 +94,7 @@ flowchart LR
 - **Session Resume**：支持多会话持久化、会话列表、按 ID 恢复，让长任务可以中断后继续
 - **Security-first Execution**：命令执行采用 allow / confirm / block 三级策略，并配合外部路径确认和审计日志控制风险
 - **Eval-ready Benchmarking**：内置 benchmark、隔离执行和前置条件检查，可持续评估 read / edit 类任务表现
-- **CLI Packaging Baseline**：补齐 bin 入口、安装元数据、环境自检与面向最终用户的安装文档
+- **CLI Packaging Baseline**：补齐 bin 入口、安装元数据、环境自检与面向最终用户的安装文档，并完成本地 tarball 安装验证
 
 ## 适合简历的项目描述
 
@@ -504,6 +504,8 @@ npm run pack:verify
 - 包内存在 `dist/cli/index.js`
 - 包内不包含 `*.test.js` 测试产物
 
+另外，本项目已经做过一次真实的本地 tarball 安装验证：先 `npm pack`，再本地 `npm install -g ./mini-claude-code-0.1.0.tgz`，并确认 `mini-claude-code --version`、`mini-claude-code doctor --json` 可以正常运行。
+
 如果检查输出里仍出现测试产物或不该发布的文件，再调整 `tsconfig.json`、`files` 或打包脚本；确认无误后再执行正式发布。
 
 ## 版本与发布流程
@@ -529,11 +531,11 @@ git push origin main --follow-tags
 
 - 执行 `npm ci`
 - 执行 `npm run release:check`
-- 校验通过后执行 `npm publish`
+- 校验通过后执行 `npm publish --provenance`
 
 也可以在 GitHub Actions 页面手动触发同一个 release workflow。
 
-在仓库 Settings → Secrets and variables → Actions 中添加 `NPM_TOKEN` 后，自动发布链路才会生效。
+在仓库 Settings → Secrets and variables → Actions 中添加 `NPM_TOKEN` 后，自动发布链路才会生效；workflow 还会通过 GitHub Actions OIDC 为 npm 发布附带 provenance 元数据。
 
 如果暂时还没发布 npm，也建议至少先跑完 `npm run release:check`，把它当作发布候选版本的基线检查。
 
