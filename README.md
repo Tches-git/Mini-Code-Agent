@@ -47,6 +47,176 @@ flowchart LR
     Tools --> Validation[Validation Loop]
 ```
 
+## 深入结构图
+
+### Agent 层结构
+
+```mermaid
+flowchart TD
+    A[src/agent/] --> B[orchestrator.ts]
+    A --> C[approval.ts]
+    A --> D[validation.ts]
+    A --> E[session.ts]
+    A --> F[summary.ts]
+    A --> G[prompts.ts]
+
+    B --> B1[LLM 调用]
+    B --> B2[工具调度]
+    B --> B3[自动验证/自动修复]
+    B --> B4[上下文裁剪]
+    B --> B5[会话持久化]
+
+    C --> C1[命令确认]
+    C --> C2[工作区外访问确认]
+    C --> C3[审计记录]
+
+    D --> D1[验证计划]
+    D --> D2[失败重放]
+    D --> D3[diagnostics 关联]
+
+    E --> E1[保存会话]
+    E --> E2[加载/恢复会话]
+    E --> E3[会话索引]
+
+    F --> F1[摘要压缩]
+    F --> F2[焦点保留]
+
+    G --> G1[系统提示词]
+    G --> G2[Agent 行为约束]
+
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+    B --> G
+```
+
+### Agent 执行时序
+
+```mermaid
+sequenceDiagram
+    participant User as User
+    participant CLI as CLI
+    participant Orch as AgentOrchestrator
+    participant LLM as LlmClient
+    participant Tools as Tools Layer
+    participant Approval as ApprovalManager
+    participant Validate as Validation
+    participant Session as Session Store
+
+    User->>CLI: 输入任务 / 交互命令
+    CLI->>Orch: run(task)
+    Orch->>LLM: chatStream(messages, tools)
+    LLM-->>Orch: text + toolCalls
+
+    loop 每轮推理/工具调用
+        Orch->>Approval: confirmCommand / confirmExternalPathAccess
+        Approval-->>Orch: allow / reject
+        Orch->>Tools: executeToolCall(call)
+        Tools-->>Orch: result / diff
+        Orch->>Orch: 记录 steps / diffs / modifiedPaths
+    end
+
+    alt 发生文件修改
+        Orch->>Validate: getValidationPlan(changedPaths)
+        Validate-->>Orch: validation steps
+        loop 自动验证
+            Orch->>Approval: confirmCommand(command, auto_validate)
+            Approval-->>Orch: allow / reject
+            Orch->>Tools: run_command(validation)
+            Tools-->>Orch: command result
+            alt 验证失败且可自动修复
+                Orch->>Validate: getDiagnosticsForValidationCommand()
+                Validate-->>Orch: diagnostics + failure prompt
+                Orch->>LLM: 回灌失败信息继续修复
+                LLM-->>Orch: 新一轮 toolCalls
+            end
+        end
+    end
+
+    Orch->>Session: saveSession(messages, summary, focus)
+    Session-->>Orch: sessionId
+    Orch-->>CLI: finalText + steps + diffs
+    CLI-->>User: 输出结果
+```
+
+### Validation 闭环
+
+```mermaid
+flowchart TD
+    A[代码发生修改] --> B[getValidationPlan(changedPaths)]
+    B --> C{修改类型}
+
+    C -->|仅文档| D[跳过自动验证]
+    C -->|测试变更| E[优先 lint + test]
+    C -->|源码变更| F[优先 lint + build]
+    C -->|配置/依赖变更| G[lint + test + build 全量验证]
+
+    E --> H[尝试定向测试命令]
+    F --> I[执行 lint/build]
+    G --> J[执行完整验证计划]
+
+    H --> K{定向测试是否受支持}
+    K -->|否| L[回退到完整 test]
+    K -->|是| M[执行受影响测试]
+
+    M --> N{验证是否通过}
+    L --> N
+    I --> N
+    J --> N
+
+    N -->|通过| O[验证完成]
+    N -->|失败| P[getDiagnosticsForValidationCommand]
+    P --> Q[buildFailurePrompt]
+    Q --> R[回灌给 Orchestrator / LLM]
+    R --> S[最小修复代码]
+    S --> T[重新执行验证]
+    T --> U{是否达到自动修复上限}
+    U -->|未达到| P
+    U -->|达到| V[返回最终失败报告]
+```
+
+### Tools 层结构
+
+```mermaid
+flowchart TD
+    A[src/tools/] --> B[filesystem.ts]
+    A --> C[search.ts]
+    A --> D[command.ts]
+    A --> E[git.ts]
+    A --> F[diagnostics.ts]
+    A --> G[index.ts]
+
+    B --> B1[list_files]
+    B --> B2[read_file]
+    B --> B3[create_file/write_file]
+    B --> B4[append_text/insert_after/replace_text]
+    B --> B5[import_external_file]
+
+    C --> C1[search_text]
+    C --> C2[project_map]
+
+    D --> D1[run_command]
+    D --> D2[allow / confirm / block]
+
+    E --> E1[git_status]
+    E --> E2[git_diff]
+    E --> E3[git_log]
+    E --> E4[git_add]
+    E --> E5[git_commit]
+
+    F --> F1[readTypeScriptDiagnostics]
+    F --> F2[readLintDiagnostics]
+    F --> F3[read_diagnostics]
+
+    G --> H[tools[] 聚合导出]
+    B --> H
+    C --> H
+    D --> H
+    E --> H
+    F --> H
+```
+
 ## 快速开始
 
 ### 方式 1：通过 GitHub Releases 下载 tarball（推荐给最终用户）
