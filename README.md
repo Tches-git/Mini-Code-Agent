@@ -12,15 +12,16 @@
 
 ## 当前状态
 
-- 已完成 CLI 打包、帮助信息、环境初始化与自检流程
-- 已验证本地 tarball 安装、全局运行和首次使用闭环
+- 已完成 CLI 打包、帮助信息、环境初始化、自检、交互会话与单次任务执行流程
+- 已具备审批日志、会话恢复、benchmark、自动验证/自动修复闭环
+- 已验证本地 tarball 安装、全局运行、首次使用闭环，以及主要 CLI 页面回归测试
 - 已具备 GitHub Releases 可下载资产的自动上传 workflow
 - 当前推荐通过 GitHub Releases 下载 tarball 或源码仓库运行
 
 ## Highlights
 
 - **Tool-calling Agent**：文件读写、全文搜索、命令执行、Git、diagnostics 全部纳入同一条 agent loop
-- **Diagnostics-driven Auto-Fix**：修改后自动验证，并把 TypeScript / Biome 结构化错误回灌给模型继续修复
+- **Diagnostics-driven Auto-Fix**：修改后自动验证，并把 TypeScript / Biome / ESLint 结构化错误回灌给模型继续修复
 - **Git-aware Workflow**：支持 `git status`、`git diff`、`git log`、`git add`、`git commit`
 - **Session Resume**：支持多会话持久化、查看历史会话、按 ID 恢复上下文
 - **Security-first Execution**：命令执行采用 allow / confirm / block 三级策略，并记录审批日志
@@ -36,18 +37,64 @@
 
 ```mermaid
 flowchart LR
-    User[CLI 输入] --> CLI[Commander + REPL]
+    User[CLI 输入] --> CLI[Commander Commands]
+    User --> REPL[Interactive REPL]
+    CLI --> Render[Logger Rendering Layer]
+    REPL --> Render
     CLI --> Orchestrator[Agent Orchestrator]
+    REPL --> Orchestrator
     Orchestrator --> LLM[OpenAI-compatible LLM]
     Orchestrator --> Tools[Files / Search / Command / Git / Diagnostics]
     Orchestrator --> Session[Session Store]
     Orchestrator --> Approval[Approval Manager]
+    Orchestrator --> Validation[Validation Loop]
+    Render --> Terminal[Terminal Cards and Tables]
     Tools --> Workspace[Workspace Files]
     Tools --> GitRepo[Git Repository]
-    Tools --> Validation[Validation Loop]
 ```
 
 ## 深入结构图
+
+### CLI / 渲染层结构
+
+```mermaid
+flowchart TD
+    A[src/cli/] --> B[index.ts]
+    A --> C[interactive.ts]
+    A --> D[approval-log.ts]
+    A --> E[sessions.ts]
+    A --> F[benchmark.ts]
+
+    B --> B1[Commander 子命令入口]
+    B --> B2[单次任务执行]
+    B --> B3[doctor and init]
+
+    C --> C1[REPL 循环]
+    C --> C2[slash commands]
+    C --> C3[审批提示卡片]
+    C --> C4[事件流展示]
+
+    D --> D1[审批日志过滤]
+    D --> D2[分页 and 排序]
+    D --> D3[摘要压缩]
+
+    E --> E1[会话列表]
+    E --> E2[分页 and 排序]
+    E --> E3[详情 and JSON 输出]
+
+    F --> F1[benchmark 列表]
+    F --> F2[benchmark 报告展示]
+
+    B --> G[src/utils/logger.ts]
+    C --> G
+    D --> G
+    E --> G
+    F --> G
+    G --> G1[card and list primitives]
+    G --> G2[status and diff rendering]
+    G --> G3[rich text and tables]
+    G --> G4[snapshot-tested terminal layout]
+```
 
 ### Agent 层结构
 
@@ -62,20 +109,21 @@ flowchart TD
 
     B --> B1[LLM 调用]
     B --> B2[工具调度]
-    B --> B3[自动验证/自动修复]
+    B --> B3[自动验证 and 自动修复]
     B --> B4[上下文裁剪]
     B --> B5[会话持久化]
+    B --> B6[steps and diffs 聚合]
 
     C --> C1[命令确认]
     C --> C2[工作区外访问确认]
-    C --> C3[审计记录]
+    C --> C3[审批审计记录]
 
     D --> D1[验证计划]
     D --> D2[失败重放]
     D --> D3[diagnostics 关联]
 
     E --> E1[保存会话]
-    E --> E2[加载/恢复会话]
+    E --> E2[加载 and 恢复会话]
     E --> E3[会话索引]
 
     F --> F1[摘要压缩]
@@ -91,12 +139,13 @@ flowchart TD
     B --> G
 ```
 
-### Agent 执行时序
+### Agent / CLI 执行时序
 
 ```mermaid
 sequenceDiagram
     participant User as User
-    participant CLI as CLI
+    participant CLI as CLI or REPL
+    participant Render as Logger Layer
     participant Orch as AgentOrchestrator
     participant LLM as LlmClient
     participant Tools as Tools Layer
@@ -105,15 +154,18 @@ sequenceDiagram
     participant Session as Session Store
 
     User->>CLI: 输入任务 / 交互命令
+    CLI->>Render: 渲染目标 / 命令 / hint
     CLI->>Orch: run(task)
     Orch->>LLM: chatStream(messages, tools)
     LLM-->>Orch: text + toolCalls
 
-    loop 每轮推理/工具调用
+    loop 每轮推理 and 工具调用
         Orch->>Approval: confirmCommand / confirmExternalPathAccess
         Approval-->>Orch: allow / reject
+        CLI->>Render: 审批卡片 / 风险级别 / 默认拒绝策略
         Orch->>Tools: executeToolCall(call)
         Tools-->>Orch: result / diff
+        CLI->>Render: tool events / diff blocks / status lines
         Orch->>Orch: 记录 steps / diffs / modifiedPaths
     end
 
@@ -125,6 +177,7 @@ sequenceDiagram
             Approval-->>Orch: allow / reject
             Orch->>Tools: run_command(validation)
             Tools-->>Orch: command result
+            CLI->>Render: 自动验证 and 自动修复状态
             alt 验证失败且可自动修复
                 Orch->>Validate: getDiagnosticsForValidationCommand()
                 Validate-->>Orch: diagnostics + failure prompt
@@ -137,6 +190,7 @@ sequenceDiagram
     Orch->>Session: saveSession(messages, summary, focus)
     Session-->>Orch: sessionId
     Orch-->>CLI: finalText + steps + diffs
+    CLI->>Render: completion card / assistant block
     CLI-->>User: 输出结果
 ```
 
@@ -189,15 +243,16 @@ flowchart TD
 
     B --> B1[list_files]
     B --> B2[read_file]
-    B --> B3[create_file/write_file]
-    B --> B4[append_text/insert_after/replace_text]
+    B --> B3[create_file and write_file]
+    B --> B4[append_text and insert_after and replace_text]
     B --> B5[import_external_file]
 
     C --> C1[search_text]
     C --> C2[project_map]
 
     D --> D1[run_command]
-    D --> D2[allow / confirm / block]
+    D --> D2[allow and confirm and block]
+    D --> D3[command audit integration]
 
     E --> E1[git_status]
     E --> E2[git_diff]
@@ -209,12 +264,38 @@ flowchart TD
     F --> F2[readLintDiagnostics]
     F --> F3[read_diagnostics]
 
-    G --> H[tools[] 聚合导出]
+    G --> H[tools array 聚合导出]
     B --> H
     C --> H
     D --> H
     E --> H
     F --> H
+```
+
+### 终端渲染层结构
+
+```mermaid
+flowchart TD
+    A[src/utils/logger.ts] --> B[renderRichTextLines]
+    A --> C[logCard and logCardList]
+    A --> D[logDetailEntries and logKeyValue]
+    A --> E[logStatusLine and logSuccess and logError]
+    A --> F[logDiffHeader and logDiffLine]
+    A --> G[logToolCall and logToolResult and logToolError]
+    A --> H[logAutoValidate and logAutoFix and context events]
+
+    B --> B1[markdown cleanup]
+    B --> B2[table rendering]
+    B --> B3[code block rendering]
+    B --> B4[line wrapping]
+
+    F --> F1[long path truncation]
+    F --> F2[diff line wrapping]
+
+    A --> I[logger.test.ts]
+    A --> J[logger.snapshot.test.ts]
+    J --> J1[60 columns canary]
+    J --> J2[100 columns canary]
 ```
 
 ## 快速开始
@@ -275,6 +356,7 @@ OPENAI_API_KEY=your-api-key-here
 
 ```bash
 mini-claude-code doctor
+mini-claude-code doctor --ping
 ```
 
 Windows 用户如果全局命令未立即生效，先重新打开 PowerShell，或确认 npm global bin 已加入 PATH。
@@ -286,10 +368,13 @@ mini-claude-code --version
 mini-claude-code --help
 mini-claude-code init
 mini-claude-code doctor
+mini-claude-code doctor --ping
 mini-claude-code -i
 mini-claude-code "分析当前项目结构"
-mini-claude-code sessions
-mini-claude-code approvals --decision rejected --after 7d
+mini-claude-code sessions --sort turns --limit 5
+mini-claude-code session <id>
+mini-claude-code approvals --decision rejected --after 7d --page 2
+mini-claude-code benchmark --list
 ```
 
 ## 交互模式
@@ -300,36 +385,53 @@ mini-claude-code approvals --decision rejected --after 7d
 |------|------|
 | `/help` | 显示可用命令 |
 | `/clear` | 清空上下文，开始新会话 |
-| `/approvals [过滤]` | 查看审批日志 |
+| `/approvals [过滤]` | 查看审批日志，支持 `decision:` / `path:` / `page:` / `sort:` 等查询 |
 | `/sessions` | 查看最近可恢复的历史会话 |
 | `/resume <id>` | 恢复指定会话 |
 | `/init` | 提示如何生成 `.env` 模板 |
 | `/doctor` | 提示如何运行环境自检 |
 | `/exit` | 退出 |
 
+交互模式中的审批提示会展示：
+- 风险级别（低 / 中 / 高）
+- 默认策略（默认拒绝，需明确批准）
+- 目标路径 / 原因 / 模式等结构化详情
+
 ## 核心能力
 
 ### 自动验证与自动修复
 
-- 修改源码后自动决定要跑哪些验证脚本
-- 测试文件变更时优先跑受影响测试
-- 定向测试不受支持时自动回退到完整 `test`
-- 验证失败时补充 TypeScript / Biome 结构化 diagnostics
-- 最多进行 2 轮自动修复
+- 修改源码后自动推断验证计划，优先执行更小范围的 lint / test / build
+- 测试文件变更时优先跑受影响测试，失败时自动回退到完整验证
+- 验证失败时补充 TypeScript / Biome / ESLint 结构化 diagnostics 回灌模型
+- Agent 会把失败信息、验证命令和 diagnostics 重新拼成修复上下文继续尝试
+- 当前默认最多进行 2 轮自动修复
 
-### 命令安全策略
+### 命令安全与审批
 
 | 策略 | 行为 | 示例 |
 |------|------|------|
 | allow | 直接执行 | `ls`, `git status`, `npm run build` |
-| confirm | 需要确认 | `npm install`, `git push` |
+| confirm | 需要确认 | `npm install`, `git push`, 工作区外读写 |
 | block | 直接拒绝 | `rm -rf`, `sudo`, `curl | sh` |
+
+补充能力：
+- 工作区外文件 / 目录访问需要显式批准
+- 审批日志支持 query text、分页、排序（newest / oldest）和 JSON 输出
+- 交互审批卡片会展示风险级别、默认拒绝策略与结构化详情
 
 ### 会话恢复
 
 - 持久化多轮对话、摘要和焦点信息
 - 支持查看最近会话列表
 - 支持按 ID 恢复指定上下文继续工作
+- 支持分页、排序（updated / created / turns）和摘要压缩显示
+
+### 终端输出与可观测性
+
+- 使用统一 logger 渲染 card、list、detail、status、diff、tool-event
+- 支持 markdown-ish rich text、表格、code block、超长路径截断与 diff 换行
+- 通过 snapshot canary 测试覆盖不同终端宽度下的关键布局
 
 ## 工具清单
 
@@ -340,20 +442,32 @@ mini-claude-code approvals --decision rejected --after 7d
 | `search_text` | 全文搜索（ripgrep 优先） |
 | `project_map` | 生成轻量级代码结构图 |
 | `import_external_file` | 导入并提取工作区外文档 |
-| `run_command` | 受策略约束的命令执行 |
+| `run_command` | 受策略约束的命令执行，并写入审批审计 |
 | `git_status` / `git_diff` / `git_log` / `git_add` / `git_commit` | Git 工作流 |
-| `read_diagnostics` | 读取 TypeScript / Biome 结构化错误 |
+| `read_diagnostics` | 读取 TypeScript / Biome / ESLint 结构化错误 |
+
+补充说明：
+- `src/tools/index.ts` 负责把全部工具聚合给 orchestrator。
+- `src/utils/command-audit.ts` 为命令与外部访问审批提供审计读写能力。
 
 ## 项目结构
 
 ```text
 src/
-  cli/      CLI 入口与交互层
-  agent/    Agent 编排、审批、验证、会话恢复
-  llm/      OpenAI 兼容通信层
-  tools/    文件、搜索、命令、Git、diagnostics 工具
-  utils/    diff、token、logger、审计等基础设施
+  cli/        Commander 命令入口、交互 REPL、审批日志、sessions / benchmark 展示层
+  agent/      Agent 编排、审批、安全策略、验证闭环、摘要与会话持久化
+  benchmark/  benchmark 任务集、隔离执行与报告聚合
+  llm/        OpenAI 兼容客户端与环境变量配置
+  tools/      文件、搜索、命令、Git、diagnostics 工具实现与聚合导出
+  types/      Agent / Tool 共享类型定义
+  utils/      logger、diff、token、path、command-audit 等底层基础设施
 ```
+
+补充说明：
+- `src/utils/logger.ts` 是对外稳定 facade；具体渲染实现已拆到 `src/utils/logger/` 下的 core / rich-text / spinner 模块。
+- `src/cli/index.ts` 是统一 CLI 入口，`src/cli/interactive.ts` 负责 REPL 体验。
+- `src/agent/orchestrator.ts` 保持编排入口职责，细分逻辑拆到 `src/agent/orchestrator-*.ts`。
+- 终端 UI 设计约束与边界记录在 `docs/architecture/terminal-ui.md`。
 
 ## 工程化
 
@@ -364,7 +478,13 @@ npm run lint
 npm run check
 npm run pack:check
 npm run pack:verify
+npm run benchmark -- --list
 ```
+
+当前项目包含：
+- 单元测试 / CLI 回归测试
+- logger 终端快照测试（`src/utils/logger.snapshot.test.ts`）
+- benchmark 与隔离执行测试
 
 已经完成的真实验证：
 
@@ -372,16 +492,26 @@ npm run pack:verify
 - 本地 `npm install -g ./mini-claude-code-0.1.0.tgz`
 - `mini-claude-code --version`
 - `mini-claude-code doctor --json`
-- 全新空目录首次使用流程：`init` → `doctor`
+- `mini-claude-code doctor --ping`
+- 全新空目录首次使用流程：`init` → `doctor --ping`
 - Release workflow 已可在 GitHub Release 中上传 `.tgz` 资产
 
 ## Benchmark
 
-项目内置 benchmark / eval 框架，覆盖只读分析、受限编辑、局部重命名和 diagnostics 驱动自动修复等任务。
+项目内置 benchmark / eval 框架，覆盖只读分析、受限编辑、局部重命名和 diagnostics 驱动自动修复等任务；CLI 默认使用 `temp_copy` 隔离副本运行 benchmark。
+
+当前 benchmark CLI 支持：
+- `--list` 查看任务清单
+- `--task` 只运行指定任务
+- `--json` 输出结构化报告
+- `--isolation-mode in_place|temp_copy`
+- `--keep-isolated-workspace` 保留隔离副本便于排查
+- 汇总输出包括通过率、分类统计、skip 原因和逐任务详情
 
 ```bash
 npm run benchmark -- --list
 npm run benchmark
+npm run benchmark -- --isolation-mode temp_copy
 npm run benchmark -- --task project-structure-overview --task validation-loop --json
 ```
 

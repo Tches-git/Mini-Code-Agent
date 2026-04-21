@@ -49,7 +49,8 @@
     "pack:check": "npm pack --dry-run",
     "pack:verify": "node --input-type=module -e \"import { execSync } from 'node:child_process'; const output = execSync('npm pack --dry-run --json --silent', { encoding: 'utf8' }); const report = JSON.parse(output)[0]; const paths = report.files.map((file) => file.path); const forbidden = paths.filter((filePath) => /(^|\\/)[^/]+\\.test\\.js$/.test(filePath)); if (!paths.includes('dist/cli/index.js')) { throw new Error('npm 包缺少 dist/cli/index.js'); } if (forbidden.length > 0) { throw new Error('npm 包包含测试产物: ' + forbidden.join(', ')); } console.log('Verified npm package contents (' + report.entryCount + ' files).');\"",
     "release:check": "npm run build && npm run pack:verify",
-    "check": "npm run lint && npm test && npm run build"
+    "check": "npm run lint && npm test && npm run build",
+    "guard:terminal-ui": "npm test && npm run build"
   },
   "dependencies": {
     "chalk": "^5.3.0",

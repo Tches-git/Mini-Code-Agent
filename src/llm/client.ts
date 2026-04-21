@@ -1,27 +1,34 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
 import type { ChatMessage, ToolDefinition } from "../types/agent.js";
+import type { LlmResponse, StreamEvent, ToolCall } from "../types/llm.js";
 import {
   DEFAULT_MODEL_NAME,
   getEnv,
 } from "./env.js";
 
-export type ToolCall = {
-  id: string;
-  name: string;
-  argumentsText: string;
+export type ConnectivityCheckResult = {
+  ok: boolean;
+  detail: string;
 };
 
-export type LlmResponse = {
-  text: string;
-  toolCalls: ToolCall[];
-};
-
-export type StreamEvent =
-  | { type: "text_delta"; text: string }
-  | { type: "tool_call_start"; id: string; name: string }
-  | { type: "tool_call_args_delta"; id: string; args: string }
-  | { type: "done"; response: LlmResponse };
+const CONNECTIVITY_PROBE_TOOLS: ToolDefinition[] = [
+  {
+    name: "ping",
+    description: "Connectivity probe tool",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message: { type: "string" },
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+    async execute() {
+      return "ok";
+    },
+  },
+];
 
 export function toChatParam(m: ChatMessage): ChatCompletionMessageParam {
   if (m.role === "tool") {
@@ -51,6 +58,52 @@ export class LlmClient {
       : {}),
   });
   private model = process.env.MODEL_NAME || DEFAULT_MODEL_NAME;
+
+  async checkConnectivity(): Promise<ConnectivityCheckResult> {
+    let modelListError: string | null = null;
+    let hasConfiguredModel = false;
+
+    try {
+      const response = await this.client.models.list();
+      const models = response.data.map((model) => model.id);
+      hasConfiguredModel = models.includes(this.model);
+    } catch (error) {
+      modelListError = error instanceof Error ? error.message : String(error);
+    }
+
+    try {
+      const probe = await this.chatStream(
+        [{ role: "user", content: "Return exactly CALL_PING." }],
+        CONNECTIVITY_PROBE_TOOLS,
+        () => {},
+      );
+      const toolCallSucceeded =
+        probe.toolCalls.length > 0 && probe.toolCalls[0]?.name === "ping";
+      if (!toolCallSucceeded) {
+        return {
+          ok: false,
+          detail: hasConfiguredModel
+            ? `API 连通并发现模型 ${this.model}，但 tool-calling 探测未通过`
+            : modelListError
+              ? `chat/tool-calling 可达性待验证失败，且 models.list 不可用: ${modelListError}`
+              : `API 连通，但未在 models.list 中发现 ${this.model}，且 tool-calling 探测未通过`,
+        };
+      }
+      return {
+        ok: true,
+        detail: hasConfiguredModel
+          ? `API 连通，模型 ${this.model} 可完成 chat/tool-calling 探测`
+          : modelListError
+            ? `API 连通且可完成 chat/tool-calling 探测；models.list 不可用，可忽略于部分兼容提供方: ${modelListError}`
+            : `API 连通并可完成 chat/tool-calling 探测，但未在 models.list 中发现 ${this.model}`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
 
   private shouldFallbackToNonStream(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
