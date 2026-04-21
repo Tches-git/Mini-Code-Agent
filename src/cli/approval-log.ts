@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import {
   type CommandAuditAction,
   type CommandAuditDecision,
@@ -7,6 +6,7 @@ import {
   type CommandAuditSource,
   readCommandAuditEntries,
 } from "../utils/command-audit.js";
+import { logCardList, logDetailEntries, logEmptyState, logRenderedText, logSection } from "../utils/logger.js";
 
 export type ApprovalLogFilters = {
   contains?: string;
@@ -18,6 +18,8 @@ export type ApprovalLogFilters = {
   after?: string;
   before?: string;
   limit?: number;
+  page?: number;
+  sort?: "newest" | "oldest";
 };
 
 export type ApprovalLogPrintOptions = {
@@ -39,13 +41,7 @@ function formatTimestamp(timestamp: string): string {
 }
 
 function formatDecision(decision: CommandAuditEntry["decision"]): string {
-  if (decision === "approved") {
-    return chalk.green(decision.toUpperCase());
-  }
-  if (decision === "blocked") {
-    return chalk.red(decision.toUpperCase());
-  }
-  return chalk.yellow(decision.toUpperCase());
+  return `**${decision.toUpperCase()}**`;
 }
 
 function formatKind(kind: CommandAuditEntry["kind"]): string {
@@ -92,16 +88,9 @@ function printApprovalStats(entries: CommandAuditEntry[]) {
     incrementCount(actions, entry.action);
   }
 
-  console.log(chalk.gray(`  共 ${entries.length} 条记录`));
-  if (decisions.size > 0) {
-    console.log(chalk.gray(`  结果: ${renderCountMap(decisions)}`));
-  }
-  if (kinds.size > 0) {
-    console.log(chalk.gray(`  类别: ${renderCountMap(kinds)}`));
-  }
-  if (actions.size > 0) {
-    console.log(chalk.gray(`  操作: ${renderCountMap(actions)}`));
-  }
+  logRenderedText(
+    `| 统计项 | 值 |\n| --- | --- |\n| 总记录数 | ${entries.length} |\n| 结果 | ${renderCountMap(decisions) || "-"} |\n| 类别 | ${renderCountMap(kinds) || "-"} |\n| 操作 | ${renderCountMap(actions) || "-"} |`,
+  );
 }
 
 function splitQueryTokens(input: string): string[] {
@@ -186,6 +175,17 @@ export function parseApprovalLogQueryText(
       }
       continue;
     }
+    if (key === "page") {
+      const parsedPage = Number.parseInt(value, 10);
+      if (Number.isFinite(parsedPage) && parsedPage > 0) {
+        filters.page = parsedPage;
+      }
+      continue;
+    }
+    if (key === "sort") {
+      filters.sort = value === "oldest" ? "oldest" : "newest";
+      continue;
+    }
     if (key === "contains") {
       containsParts.push(value);
       continue;
@@ -201,44 +201,73 @@ export function parseApprovalLogQueryText(
   return { filters, options };
 }
 
+function compressText(text: string, maxLength = 88): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  return normalized.length <= maxLength
+    ? normalized
+    : `${normalized.slice(0, Math.max(1, maxLength - 1))}…`;
+}
+
 export async function printApprovalLog(
   filters: ApprovalLogFilters,
   options?: ApprovalLogPrintOptions,
 ): Promise<void> {
-  const entries = await readCommandAuditEntries(filters);
+  const allEntries = await readCommandAuditEntries({
+    ...filters,
+    limit: undefined,
+  });
+  const sortedEntries =
+    filters.sort === "oldest" ? [...allEntries].reverse() : allEntries;
+  const page = Math.max(1, filters.page || 1);
+  const pageSize = Math.max(1, filters.limit || 20);
+  const startIndex = (page - 1) * pageSize;
+  const entries = sortedEntries.slice(startIndex, startIndex + pageSize);
 
   if (options?.json) {
     if (options.stats) {
-      console.log(JSON.stringify({ total: entries.length, entries }, null, 2));
+      console.log(JSON.stringify({ total: allEntries.length, page, pageSize, entries }, null, 2));
       return;
     }
     console.log(JSON.stringify(entries, null, 2));
     return;
   }
 
-  console.log();
-  console.log(chalk.cyan("═══ 命令审批记录 ═══"));
+  logSection("命令审批记录");
 
   if (entries.length === 0) {
-    console.log(chalk.gray("暂无匹配的审批记录。"));
+    logEmptyState("暂无匹配的审批记录。");
     console.log();
     return;
   }
 
   if (options?.stats) {
-    printApprovalStats(entries);
+    printApprovalStats(allEntries);
     console.log();
   }
 
+  logDetailEntries(
+    [
+      { label: "排序", value: filters.sort === "oldest" ? "最早优先" : "最新优先" },
+      { label: "页码", value: `${page}/${Math.max(1, Math.ceil(allEntries.length / pageSize))}` },
+      { label: "每页条数", value: String(pageSize) },
+      { label: "匹配总数", value: String(allEntries.length) },
+    ],
+  );
+
   for (const entry of entries) {
-    console.log(
-      `  ${formatDecision(entry.decision)} ${chalk.gray(formatTimestamp(entry.timestamp))} ${chalk.magenta(`[${entry.source}]`)} ${chalk.cyan(`[${formatKind(entry.kind)}/${formatAction(entry.action)}]`)}`,
+    logCardList("审批项", [
+      `${formatDecision(entry.decision)} ${compressText(entry.command, 96)}`,
+    ]);
+    logDetailEntries(
+      [
+        { label: "时间", value: formatTimestamp(entry.timestamp) },
+        { label: "来源", value: entry.source },
+        { label: "类别", value: `${formatKind(entry.kind)} / ${formatAction(entry.action)}` },
+        ...(entry.targetPath ? [{ label: "路径", value: entry.targetPath }] : []),
+        { label: "原因", value: compressText(entry.reason, 120) },
+      ],
+      "    ",
     );
-    console.log(chalk.white(`    ${entry.command}`));
-    if (entry.targetPath) {
-      console.log(chalk.gray(`    路径: ${entry.targetPath}`));
-    }
-    console.log(chalk.gray(`    原因: ${entry.reason}`));
   }
 
   console.log();

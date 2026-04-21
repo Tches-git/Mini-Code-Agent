@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+sea-prep.blob
 
 # Environment variables (contains API keys)
 .env

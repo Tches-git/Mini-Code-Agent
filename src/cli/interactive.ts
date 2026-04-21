@@ -2,6 +2,7 @@ import { stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
 import chalk from "chalk";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
+import { loadWorkspaceEnv } from "../llm/env.js";
 import { listSessions } from "../agent/session.js";
 import type { AgentEvent, ApprovalRequest } from "../types/agent.js";
 import {
@@ -203,7 +204,9 @@ export async function startInteractive(options?: {
   resumeSessionId?: string;
   cwd?: string;
 }) {
-  setWorkspaceRoot(options?.cwd || process.cwd());
+  const workspaceRoot = options?.cwd || process.cwd();
+  setWorkspaceRoot(workspaceRoot);
+  loadWorkspaceEnv(workspaceRoot);
   const rl = readline.createInterface({ input, output, terminal: true });
   const spinner = new Spinner();
   const confirmAction = async (request: ApprovalRequest): Promise<boolean> => {

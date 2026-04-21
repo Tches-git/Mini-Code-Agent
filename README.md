@@ -16,7 +16,9 @@
 - 已具备审批日志、会话恢复、benchmark、自动验证/自动修复闭环
 - 已验证本地 tarball 安装、全局运行、首次使用闭环，以及主要 CLI 页面回归测试
 - 已具备 GitHub Releases 可下载资产的自动上传 workflow
-- 当前推荐通过 GitHub Releases 下载 tarball 或源码仓库运行
+- 已新增 standalone 单文件可执行产物构建路径，与现有 npm/tarball 发布并行存在
+- Release workflow 已支持按平台构建 standalone 资产（Linux / macOS / Windows）
+- 当前推荐通过 GitHub Releases 下载 standalone 可执行文件、tarball，或直接运行源码仓库
 
 ## Highlights
 
@@ -300,7 +302,22 @@ flowchart TD
 
 ## 快速开始
 
-### 方式 1：通过 GitHub Releases 下载 tarball（推荐给最终用户）
+### 方式 1：通过 GitHub Releases 下载 standalone 可执行文件（推荐给最终用户）
+
+在 GitHub Releases 页面下载当前平台对应的 standalone 可执行文件（例如 `mini-claude-code-linux-x64`、`mini-claude-code-darwin-arm64`、`mini-claude-code-win32-x64.exe`），然后直接运行：
+
+**macOS / Linux**
+
+```bash
+chmod +x ./mini-claude-code
+mkdir my-project
+cd my-project
+../mini-claude-code init
+```
+
+standalone 产物是当前平台专用的单文件可执行程序，不依赖 npm 全局安装；首次运行后，工作区、`.env` 与会话数据行为与正常安装版一致。源码仓库与现有 npm/tarball 发布路径保持不变，只是额外新增了一条并行分发方式。若本地 Node 发行版不支持 SEA 注入，可改在 GitHub Actions `setup-node` 环境执行 `npm run prepare:standalone:release` 产出带平台后缀的发布文件。
+
+### 方式 2：通过 GitHub Releases 下载 tarball
 
 在 GitHub Releases 页面下载对应版本的 `mini-claude-code-<version>.tgz`，然后本地安装：
 
@@ -322,7 +339,7 @@ Set-Location my-project
 mini-claude-code init
 ```
 
-### 方式 2：本地打包后安装
+### 方式 3：本地打包后安装
 
 ```bash
 npm install
@@ -348,7 +365,7 @@ mini-claude-code --cwd ~/work/my-project -i
 mini-claude-code --cwd ~/work/my-project "分析当前项目结构"
 ```
 
-### 方式 3：直接从源码仓库运行
+### 方式 4：直接从源码仓库运行
 
 ```bash
 git clone https://github.com/Tches-git/Mini-Code-Agent.git
@@ -500,10 +517,14 @@ src/
 ```bash
 npm test
 npm run build
+npm run build:standalone
+npm run build:standalone:gha
+npm run prepare:standalone:release
 npm run lint
 npm run check
 npm run pack:check
 npm run pack:verify
+npm run release:check:standalone
 npm run benchmark -- --list
 ```
 
@@ -516,6 +537,10 @@ npm run benchmark -- --list
 
 - `npm pack`
 - 本地 `npm install -g ./mini-claude-code-0.1.0.tgz`
+- `npm run build:standalone`
+- `npm run build:standalone:gha`
+- `npm run prepare:standalone:release`
+- `./dist/standalone/mini-claude-code --version`
 - `mini-claude-code --version`
 - `mini-claude-code doctor --json`
 - `mini-claude-code doctor --ping`

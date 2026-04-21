@@ -6,7 +6,7 @@ import { execa } from "execa";
 import { fileURLToPath } from "node:url";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { LlmClient } from "../llm/client.js";
-import { getRuntimeEnvInfo, writeEnvTemplate } from "../llm/env.js";
+import { getRuntimeEnvInfo, loadWorkspaceEnv, writeEnvTemplate } from "../llm/env.js";
 import {
   logDiffHeader,
   logDiffLine,
@@ -23,11 +23,17 @@ import { getAppDataDir, getWorkspaceRoot, setWorkspaceRoot } from "../utils/runt
 import { parseApprovalLogQueryText, type ApprovalLogFilters, printApprovalLog } from "./approval-log.js";
 import { runBenchmarkCommand } from "./benchmark.js";
 import { startInteractive } from "./interactive.js";
+import { runReleaseStandaloneCommand } from "./release.js";
 import { printSessionDetail, printSessions } from "./sessions.js";
 
 const program = new Command();
 
 function getCliVersion(): string {
+  const injectedVersion = process.env.MINI_CLAUDE_CODE_VERSION?.trim();
+  if (injectedVersion) {
+    return injectedVersion;
+  }
+
   const packageJsonPath = fileURLToPath(new URL("../../package.json", import.meta.url));
   try {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
@@ -36,6 +42,22 @@ function getCliVersion(): string {
     return packageJson.version || "0.0.0";
   } catch {
     return "0.0.0";
+  }
+}
+
+function shouldRunAsEntrypoint(): boolean {
+  if (process.env.MINI_CLAUDE_CODE_STANDALONE === "1") {
+    return true;
+  }
+
+  if (!process.argv[1]) {
+    return false;
+  }
+
+  try {
+    return path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+  } catch {
+    return false;
   }
 }
 
@@ -72,7 +94,10 @@ function resolveWorkspaceOption(workspace?: string): string {
 }
 
 function applyWorkspaceRoot(workspace?: string): string {
-  return setWorkspaceRoot(resolveWorkspaceOption(workspace));
+  const resolved = resolveWorkspaceOption(workspace);
+  setWorkspaceRoot(resolved);
+  loadWorkspaceEnv(resolved);
+  return resolved;
 }
 
 function logWorkspaceContext() {
@@ -371,6 +396,18 @@ program
   );
 
 program
+  .command("release:standalone")
+  .description("构建当前平台的 standalone 单文件 CLI 可执行产物")
+  .option("--output-dir <path>", "输出目录，默认 dist/standalone")
+  .option("--name <name>", "输出文件名，默认 mini-claude-code")
+  .action(async (options: { outputDir?: string; name?: string }) => {
+    await runReleaseStandaloneCommand({
+      outputDir: options.outputDir,
+      executableName: options.name,
+    });
+  });
+
+program
   .command("sessions")
   .description("列出本地可恢复会话")
   .option("--json", "以 JSON 输出")
@@ -493,10 +530,14 @@ export async function runCli(argv = process.argv) {
   await program.parseAsync(argv);
 }
 
-const isEntrypoint = process.argv[1]
-  ? fileURLToPath(import.meta.url) === process.argv[1]
-  : false;
+function handleEntrypointError(error: unknown): never {
+  logSection("执行失败");
+  logError(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+const isEntrypoint = shouldRunAsEntrypoint();
 
 if (isEntrypoint) {
-  await runCli(process.argv);
+  runCli(process.argv).catch(handleEntrypointError);
 }

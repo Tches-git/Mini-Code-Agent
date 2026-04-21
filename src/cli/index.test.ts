@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWriteEnvTemplate = vi.hoisted(() => vi.fn());
 const mockGetRuntimeEnvInfo = vi.hoisted(() => vi.fn());
+const mockLoadWorkspaceEnv = vi.hoisted(() => vi.fn());
 const mockCheckConnectivity = vi.hoisted(() => vi.fn());
 const mockExeca = vi.hoisted(() => vi.fn());
 const mockAgentRun = vi.hoisted(() => vi.fn());
@@ -17,12 +18,13 @@ const mockGetAppDataDir = vi.hoisted(() => vi.fn(() => "/tmp/home/.mini-claude-c
 vi.mock("../llm/env.js", () => ({
   writeEnvTemplate: mockWriteEnvTemplate,
   getRuntimeEnvInfo: mockGetRuntimeEnvInfo,
+  loadWorkspaceEnv: mockLoadWorkspaceEnv,
 }));
 
 vi.mock("../llm/client.js", () => ({
   LlmClient: class {
     checkConnectivity = mockCheckConnectivity;
-  },
+  }
 }));
 
 vi.mock("execa", () => ({
@@ -32,7 +34,7 @@ vi.mock("execa", () => ({
 vi.mock("../agent/orchestrator.js", () => ({
   AgentOrchestrator: class {
     run = mockAgentRun;
-  },
+  }
 }));
 
 vi.mock("./interactive.js", () => ({
@@ -76,6 +78,7 @@ describe("cli index output", () => {
       openaiBaseUrl: "",
       modelName: "gpt-test",
     });
+    mockLoadWorkspaceEnv.mockReset();
     mockCheckConnectivity.mockReset().mockResolvedValue({ ok: true, detail: "ok" });
     mockExeca.mockReset().mockResolvedValue({ stdout: "ripgrep 14.1.0" });
     mockAgentRun.mockReset().mockResolvedValue({
@@ -111,6 +114,7 @@ describe("cli index output", () => {
     expect(calls).toContain("下一步");
     expect(calls).not.toContain("###");
     expect(mockSetWorkspaceRoot).toHaveBeenCalledWith("/tmp/workspace");
+    expect(mockLoadWorkspaceEnv).toHaveBeenCalledWith("/tmp/workspace");
   });
 
   it("renders doctor output as status blocks and hint", async () => {
@@ -125,6 +129,7 @@ describe("cli index output", () => {
     expect(calls).toContain("[FAIL]");
     expect(calls).toContain("OPENAI_API_KEY");
     expect(calls).toContain("可先运行");
+    expect(mockLoadWorkspaceEnv).toHaveBeenCalledWith("/tmp/workspace");
   });
 
   it("supports doctor json output without formatted blocks", async () => {
@@ -148,6 +153,7 @@ describe("cli index output", () => {
     expect(calls).toContain("本次执行未修改文件");
     expect(calls).toContain("已完成");
     expect(calls).not.toContain("###");
+    expect(mockLoadWorkspaceEnv).toHaveBeenCalledWith("/tmp/workspace");
   });
 
   it("runCli routes approvals query text through parser-aware filters", async () => {

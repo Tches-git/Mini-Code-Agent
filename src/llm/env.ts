@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import "dotenv/config";
+import dotenv from "dotenv";
 import { getWorkspaceRoot } from "../utils/runtime.js";
 
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
@@ -22,8 +22,12 @@ function isConfiguredValue(value: string | undefined): boolean {
   return normalized.length > 0 && normalized !== "your-api-key-here";
 }
 
-export function getEnvFilePath(cwd = process.cwd()): string {
+export function getEnvFilePath(cwd = getWorkspaceRoot()): string {
   return path.resolve(cwd, DEFAULT_ENV_FILE_NAME);
+}
+
+export function loadWorkspaceEnv(cwd = getWorkspaceRoot()): void {
+  dotenv.config({ path: getEnvFilePath(cwd), override: false });
 }
 
 export function buildEnvTemplate(): string {

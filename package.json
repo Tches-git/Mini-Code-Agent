@@ -36,8 +36,13 @@
     "chat": "tsx src/cli/index.ts -i",
     "clean": "node --input-type=module -e \"import { rm } from 'node:fs/promises'; await rm('dist', { recursive: true, force: true });\"",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "build:standalone": "npm run build && node dist/cli/index.js release:standalone",
+    "build:standalone:gha": "npm run build:standalone && node ./scripts/verify-standalone.mjs",
+    "prepare:standalone:release": "node ./scripts/prepare-standalone-release.mjs",
+    "release:standalone": "node dist/cli/index.js release:standalone",
     "start": "node dist/cli/index.js",
     "start:chat": "node dist/cli/index.js -i",
+    "start:standalone": "./dist/standalone/mini-claude-code",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
     "test": "vitest run",
@@ -48,7 +53,9 @@
     "prepack": "npm run build",
     "pack:check": "npm pack --dry-run",
     "pack:verify": "node --input-type=module -e \"import { execSync } from 'node:child_process'; const output = execSync('npm pack --dry-run --json --silent', { encoding: 'utf8' }); const report = JSON.parse(output)[0]; const paths = report.files.map((file) => file.path); const forbidden = paths.filter((filePath) => /(^|\\/)[^/]+\\.test\\.js$/.test(filePath)); if (!paths.includes('dist/cli/index.js')) { throw new Error('npm 包缺少 dist/cli/index.js'); } if (forbidden.length > 0) { throw new Error('npm 包包含测试产物: ' + forbidden.join(', ')); } console.log('Verified npm package contents (' + report.entryCount + ' files).');\"",
+    "standalone:verify": "node ./scripts/verify-standalone.mjs",
     "release:check": "npm run build && npm run pack:verify",
+    "release:check:standalone": "npm run build:standalone",
     "check": "npm run lint && npm test && npm run build",
     "guard:terminal-ui": "npm test && npm run build"
   },
@@ -62,9 +69,11 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/node": "^22.5.4",
-    "tsx": "^4.17.1",
     "@biomejs/biome": "^2.0.0",
+    "@types/node": "^22.5.4",
+    "esbuild": "^0.28.0",
+    "postject": "^1.0.0-alpha.6",
+    "tsx": "^4.17.1",
     "vitest": "^4.1.1"
   }
 }

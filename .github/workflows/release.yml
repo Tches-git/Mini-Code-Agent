@@ -6,11 +6,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  release:
+  package:
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
+    outputs:
+      package_file: ${{ steps.pack.outputs.package_file }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,13 +26,60 @@ jobs:
         run: |
           PACKAGE_FILE=$(npm pack)
           echo "package_file=${PACKAGE_FILE}" >> "$GITHUB_OUTPUT"
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: ${{ steps.pack.outputs.package_file }}
-          generate_release_notes: true
+          name: npm-package
+          path: ${{ steps.pack.outputs.package_file }}
       - name: Publish to npm
         if: ${{ secrets.NPM_TOKEN != '' }}
         run: npm publish --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  standalone:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: mini-claude-code-linux-x64
+            artifact_path: dist/release-assets/mini-claude-code-linux-x64
+          - os: macos-latest
+            artifact_name: mini-claude-code-darwin-arm64
+            artifact_path: dist/release-assets/mini-claude-code-darwin-arm64
+          - os: windows-latest
+            artifact_name: mini-claude-code-win32-x64.exe
+            artifact_path: dist\release-assets\mini-claude-code-win32-x64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run prepare:standalone:release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+
+  github-release:
+    needs: [package, standalone]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/npm-package/${{ needs.package.outputs.package_file }}
+            release-artifacts/mini-claude-code-linux-x64/mini-claude-code-linux-x64
+            release-artifacts/mini-claude-code-darwin-arm64/mini-claude-code-darwin-arm64
+            release-artifacts/mini-claude-code-win32-x64.exe/mini-claude-code-win32-x64.exe
+          generate_release_notes: true

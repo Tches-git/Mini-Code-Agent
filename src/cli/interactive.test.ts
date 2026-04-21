@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockLoadWorkspaceEnv = vi.hoisted(() => vi.fn());
 const mockQuestion = vi.hoisted(() => vi.fn());
 const mockClose = vi.hoisted(() => vi.fn());
 const mockListSessions = vi.hoisted(() => vi.fn());
@@ -38,6 +39,10 @@ vi.mock("node:readline/promises", () => ({
 
 vi.mock("../agent/session.js", () => ({
   listSessions: mockListSessions,
+}));
+
+vi.mock("../llm/env.js", () => ({
+  loadWorkspaceEnv: mockLoadWorkspaceEnv,
 }));
 
 vi.mock("../agent/orchestrator.js", () => ({
@@ -94,6 +99,7 @@ describe("startInteractive", () => {
     await startInteractive({ cwd: "/tmp/demo" });
 
     expect(mockSetWorkspaceRoot).toHaveBeenCalledWith("/tmp/demo");
+    expect(mockLoadWorkspaceEnv).toHaveBeenCalledWith("/tmp/demo");
     expect(mockLogHint).toHaveBeenCalledWith(expect.stringContaining("当前工作区"));
     expect(mockLogHint).toHaveBeenCalledWith(expect.stringContaining("用户数据目录"));
   });
@@ -119,6 +125,7 @@ describe("startInteractive", () => {
     mockLogSuccess.mockReset();
     mockSpinnerStart.mockReset();
     mockSpinnerStop.mockReset();
+    mockLoadWorkspaceEnv.mockReset();
     mockSetWorkspaceRoot.mockReset();
     mockGetWorkspaceRoot.mockReset().mockReturnValue("/tmp/workspace");
     mockGetAppDataDir.mockReset().mockReturnValue("/tmp/home/.mini-claude-code");
