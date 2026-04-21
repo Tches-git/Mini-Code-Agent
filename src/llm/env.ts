@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import "dotenv/config";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const DEFAULT_MODEL_NAME = "gpt-5.4";
@@ -57,7 +58,7 @@ export async function writeEnvTemplate(options?: {
 }
 
 export function getRuntimeEnvInfo(): RuntimeEnvInfo {
-  const envFilePath = getEnvFilePath();
+  const envFilePath = getEnvFilePath(getWorkspaceRoot());
   return {
     envFilePath,
     hasEnvFile: existsSync(envFilePath),

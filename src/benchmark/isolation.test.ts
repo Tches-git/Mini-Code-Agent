@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { setWorkspaceRoot } from "../utils/runtime.js";
 import { prepareBenchmarkIsolation } from "./isolation.js";
 import type { BenchmarkTask } from "./tasks.js";
 
@@ -20,6 +21,10 @@ function makeTask(
 }
 
 describe("prepareBenchmarkIsolation", () => {
+  beforeEach(() => {
+    setWorkspaceRoot(process.cwd());
+  });
+
   it("keeps read task in place by default", async () => {
     const task = makeTask("read");
     const isolation = await prepareBenchmarkIsolation(task, {
@@ -73,6 +78,9 @@ describe("prepareBenchmarkIsolation", () => {
     );
 
     expect(content).toContain("npm run chat -- --resume <session-id>");
+    expect(content).not.toContain(
+      "npm run chat -- --resume-session <session-id>",
+    );
     await isolation.cleanup();
   });
 

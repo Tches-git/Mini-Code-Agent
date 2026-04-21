@@ -1,8 +1,8 @@
 import path from "node:path";
-
-const root = process.cwd();
+import { getWorkspaceRoot } from "./runtime.js";
 
 export function isPathInsideWorkspace(target: string): boolean {
+  const root = getWorkspaceRoot();
   const fullPath = path.resolve(root, target);
   const relativePath = path.relative(root, fullPath);
   return !relativePath.startsWith("..") && !path.isAbsolute(relativePath);

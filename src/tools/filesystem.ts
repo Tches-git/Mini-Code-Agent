@@ -8,11 +8,20 @@ import {
   isPathInsideWorkspace,
   isPathOutsideWorkspace,
 } from "../utils/path.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
-const root = process.cwd();
-const BACKUP_DIR = path.join(root, ".backup");
-const IMPORTS_DIR = path.join(root, ".imports");
+function getRoot(): string {
+  return getWorkspaceRoot();
+}
+
+function getBackupDir(): string {
+  return path.join(getRoot(), ".backup");
+}
+
+function getImportsDir(): string {
+  return path.join(getRoot(), ".imports");
+}
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 const TEXTUTIL_EXTRACTION_EXTENSIONS = new Set([
   ".doc",
@@ -92,7 +101,7 @@ function normalizeSlashes(target: string): string {
 }
 
 function resolveAccessiblePath(target: string, confirmed = false): string {
-  const fullPath = path.resolve(root, target);
+  const fullPath = path.resolve(getRoot(), target);
   if (isPathOutsideWorkspace(fullPath) && !confirmed) {
     throw new Error("访问工作区外路径前需要用户确认");
   }
@@ -100,6 +109,7 @@ function resolveAccessiblePath(target: string, confirmed = false): string {
 }
 
 function resolveWorkspacePath(target: string): string {
+  const root = getRoot();
   const fullPath = path.resolve(root, target);
   const relativePath = path.relative(root, fullPath);
   if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
@@ -109,13 +119,13 @@ function resolveWorkspacePath(target: string): string {
 }
 
 function toWorkspaceRelative(target: string): string {
-  return normalizeSlashes(path.relative(root, target));
+  return normalizeSlashes(path.relative(getRoot(), target));
 }
 
 function toDisplayPath(target: string): string {
   return isPathInsideWorkspace(target)
-    ? toWorkspaceRelative(path.resolve(root, target))
-    : normalizeSlashes(path.resolve(root, target));
+    ? toWorkspaceRelative(path.resolve(getRoot(), target))
+    : normalizeSlashes(path.resolve(getRoot(), target));
 }
 
 function toDiffLabel(displayPath: string): string {
@@ -165,7 +175,7 @@ function sanitizeFileName(fileName: string): string {
 function getBackupRelativePath(filePath: string): string {
   const resolvedPath = path.resolve(filePath);
   if (!isPathOutsideWorkspace(resolvedPath)) {
-    return path.relative(root, resolvedPath);
+    return path.relative(getRoot(), resolvedPath);
   }
 
   const parts = resolvedPath
@@ -223,8 +233,9 @@ async function resolveImportDestination(
     return resolved;
   }
 
-  await fs.mkdir(IMPORTS_DIR, { recursive: true });
-  const target = path.join(IMPORTS_DIR, `${sourceName}${targetExt}`);
+  const importsDir = getImportsDir();
+  await fs.mkdir(importsDir, { recursive: true });
+  const target = path.join(importsDir, `${sourceName}${targetExt}`);
   return findAvailablePath(target);
 }
 
@@ -305,7 +316,7 @@ async function extractTextWithTextutil(sourcePath: string): Promise<string> {
     "textutil",
     ["-convert", "txt", "-stdout", sourcePath],
     {
-      cwd: root,
+      cwd: getRoot(),
       reject: false,
       timeout: 60_000,
     },
@@ -321,7 +332,7 @@ async function extractTextWithMdls(sourcePath: string): Promise<string> {
     "mdls",
     ["-name", "kMDItemTextContent", "-raw", sourcePath],
     {
-      cwd: root,
+      cwd: getRoot(),
       reject: false,
       timeout: 60_000,
     },
@@ -340,7 +351,7 @@ async function extractTextWithMdls(sourcePath: string): Promise<string> {
 
 async function extractTextWithStrings(sourcePath: string): Promise<string> {
   const result = await execa("strings", ["-n", "4", sourcePath], {
-    cwd: root,
+    cwd: getRoot(),
     reject: false,
     timeout: 60_000,
   });
@@ -362,7 +373,7 @@ async function extractTextWithStrings(sourcePath: string): Promise<string> {
 
 async function listZipEntries(sourcePath: string): Promise<string[]> {
   const result = await execa("unzip", ["-Z1", sourcePath], {
-    cwd: root,
+    cwd: getRoot(),
     reject: false,
     timeout: 60_000,
   });
@@ -380,7 +391,7 @@ async function readZipEntry(
   entryPath: string,
 ): Promise<string> {
   const result = await execa("unzip", ["-p", sourcePath, entryPath], {
-    cwd: root,
+    cwd: getRoot(),
     reject: false,
     timeout: 60_000,
   });
@@ -717,7 +728,7 @@ async function importExternalFile(options: {
   destinationPath?: string;
   mode: ImportMode;
 }): Promise<ExternalImportResult> {
-  const resolvedSourcePath = path.resolve(root, options.sourcePath);
+  const resolvedSourcePath = path.resolve(getRoot(), options.sourcePath);
   if (isPathInsideWorkspace(resolvedSourcePath)) {
     throw new Error(
       `文件已位于工作区内，请直接读取: ${toWorkspaceRelative(resolvedSourcePath)}`,
@@ -777,7 +788,7 @@ async function backupFile(filePath: string): Promise<void> {
   const ext = path.extname(relPath);
   const base = relPath.slice(0, relPath.length - ext.length);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupPath = path.join(BACKUP_DIR, `${base}.${timestamp}${ext}`);
+  const backupPath = path.join(getBackupDir(), `${base}.${timestamp}${ext}`);
   await fs.mkdir(path.dirname(backupPath), { recursive: true });
   await fs.copyFile(filePath, backupPath);
 }

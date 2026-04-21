@@ -143,6 +143,30 @@ describe("getDiagnosticsForValidationCommand", () => {
     expect(result?.command).toContain("tsc");
   });
 
+  it("returns diagnostics for lint-like commands without assuming src directory", async () => {
+    const diagnosticsModule = await import("../tools/diagnostics.js");
+    vi.spyOn(diagnosticsModule, "readLintDiagnostics").mockResolvedValue({
+      command: "npm run lint -- --reporter json",
+      truncated: false,
+      diagnostics: [],
+    });
+
+    const result = await getDiagnosticsForValidationCommand("npm run lint");
+    expect(result?.command).toBe("npm run lint -- --reporter json");
+  });
+
+  it("maps check-like commands to lint diagnostics", async () => {
+    const diagnosticsModule = await import("../tools/diagnostics.js");
+    vi.spyOn(diagnosticsModule, "readLintDiagnostics").mockResolvedValue({
+      command: "pnpm run check -- --reporter json",
+      truncated: false,
+      diagnostics: [],
+    });
+
+    const result = await getDiagnosticsForValidationCommand("pnpm run check");
+    expect(result?.command).toBe("pnpm run check -- --reporter json");
+  });
+
   it("returns null for unsupported commands", async () => {
     const result = await getDiagnosticsForValidationCommand("npm run test");
     expect(result).toBeNull();
@@ -168,6 +192,20 @@ describe("getValidationPlan", () => {
     });
     const plan = await getValidationPlan(["src/index.ts"]);
     expect(plan.commands).toEqual(["npm run lint", "npm run build"]);
+  });
+
+  it("会回退到 check 脚本作为 lint 验证", async () => {
+    vi.spyOn(fs, "readFile").mockResolvedValue(
+      JSON.stringify({
+        scripts: { check: "biome check .", build: "tsc", test: "vitest run" },
+      }),
+    );
+    vi.spyOn(fs, "access").mockImplementation(async (target) => {
+      if (String(target).endsWith("package-lock.json")) return;
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    const plan = await getValidationPlan(["src/index.ts"]);
+    expect(plan.commands).toEqual(["npm run check", "npm run build"]);
   });
 
   it("修改配置时执行完整验证", async () => {

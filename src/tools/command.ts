@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
 import { appendCommandAudit } from "../utils/command-audit.js";
 import { isPathOutsideWorkspace } from "../utils/path.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
 const SHELL_SYNTAX_PATTERN = /&&|\|\||[|;<>`$\n\r]/;
@@ -108,6 +109,13 @@ const GUARDED_PACKAGE_MANAGER_SUBCOMMANDS = new Set([
   "upgrade",
 ]);
 const SAFE_PACKAGE_MANAGER_SUBCOMMANDS = new Set(["run", "test"]);
+const FORWARDED_MUTATING_FLAGS = new Set([
+  "--fix",
+  "--write",
+  "-u",
+  "--update",
+  "--update-snapshots",
+]);
 
 const BLOCKED_SUBSTRINGS = [
   "rm -rf /",
@@ -290,7 +298,7 @@ function isDangerous(command: string): string | null {
 async function readPackageScripts(): Promise<Record<string, string>> {
   try {
     const packageJson = JSON.parse(
-      await fs.readFile(path.join(process.cwd(), "package.json"), "utf8"),
+      await fs.readFile(path.join(getWorkspaceRoot(), "package.json"), "utf8"),
     ) as {
       scripts?: Record<string, string>;
     };
@@ -307,7 +315,7 @@ async function resolveLocalToolchainCommand(executable: string): Promise<
     }
   | undefined
 > {
-  const localBinPath = path.join(process.cwd(), "node_modules", ".bin", executable);
+  const localBinPath = path.join(getWorkspaceRoot(), "node_modules", ".bin", executable);
 
   try {
     await fs.access(localBinPath);
@@ -321,11 +329,128 @@ async function resolveLocalToolchainCommand(executable: string): Promise<
   };
 }
 
+async function assessNestedPackageManagerInvocation(
+  executable: string,
+  parentScriptName: string,
+  packageManager: string,
+  args: string[],
+  scripts: Record<string, string>,
+  seenScripts: Set<string>,
+): Promise<CommandPolicy> {
+  const subcommand = args[0]?.toLowerCase();
+  if (!subcommand) {
+    return {
+      decision: "allow",
+      reason: `${executable} run ${parentScriptName} 仅调用了 ${packageManager} 帮助命令`,
+      executable,
+    };
+  }
+
+  if (GUARDED_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand)) {
+    return {
+      decision: "confirm",
+      reason: `${executable} run ${parentScriptName} 会通过 ${packageManager} ${subcommand} 修改依赖或环境，需要用户确认`,
+      executable,
+    };
+  }
+
+  if (subcommand === "test") {
+    if (!scripts.test) {
+      return {
+        decision: "block",
+        reason: `${executable} run ${parentScriptName} 引用了不存在的脚本 test`,
+        executable,
+      };
+    }
+    if (hasForwardedMutatingFlags(args.slice(1))) {
+      return {
+        decision: "confirm",
+        reason: `${executable} run ${parentScriptName} 通过 ${packageManager} test 携带了可能修改文件或快照的参数，需要用户确认`,
+        executable,
+      };
+    }
+    return assessProjectScript(
+      executable,
+      "test",
+      scripts.test,
+      scripts,
+      seenScripts,
+    );
+  }
+
+  if (subcommand === "run") {
+    const nestedScriptName = args[1]?.toLowerCase();
+    if (!nestedScriptName) {
+      return {
+        decision: "block",
+        reason: `${executable} run ${parentScriptName} 中的 ${packageManager} run 缺少脚本名`,
+        executable,
+      };
+    }
+    if (!scripts[nestedScriptName]) {
+      return {
+        decision: "block",
+        reason: `${executable} run ${parentScriptName} 引用了不存在的脚本 ${nestedScriptName}`,
+        executable,
+      };
+    }
+    if (hasForwardedMutatingFlags(args.slice(2))) {
+      return {
+        decision: "confirm",
+        reason: `${executable} run ${parentScriptName} 通过 ${packageManager} run ${nestedScriptName} 携带了可能修改文件的参数，需要用户确认`,
+        executable,
+      };
+    }
+    return assessProjectScript(
+      executable,
+      nestedScriptName,
+      scripts[nestedScriptName],
+      scripts,
+      seenScripts,
+    );
+  }
+
+  if (packageManager === "yarn" && scripts[subcommand]) {
+    if (hasForwardedMutatingFlags(args.slice(1))) {
+      return {
+        decision: "confirm",
+        reason: `${executable} run ${parentScriptName} 通过 yarn ${subcommand} 携带了可能修改文件的参数，需要用户确认`,
+        executable,
+      };
+    }
+    return assessProjectScript(
+      executable,
+      subcommand,
+      scripts[subcommand],
+      scripts,
+      seenScripts,
+    );
+  }
+
+  return {
+    decision: "confirm",
+    reason: `${executable} run ${parentScriptName} 会通过 ${packageManager} ${subcommand} 执行额外命令，需要用户确认`,
+    executable,
+  };
+}
+
 async function assessProjectScript(
   executable: string,
   scriptName: string,
   scriptCommand: string,
+  scripts: Record<string, string>,
+  seenScripts = new Set<string>(),
 ): Promise<CommandPolicy> {
+  if (seenScripts.has(scriptName)) {
+    return {
+      decision: "confirm",
+      reason: `${executable} run ${scriptName} 存在脚本递归调用，需要用户确认`,
+      executable,
+    };
+  }
+  const nextSeenScripts = new Set(seenScripts);
+  nextSeenScripts.add(scriptName);
+
   const syntaxIssue = isDangerous(scriptCommand.trim());
   if (syntaxIssue) {
     return {
@@ -371,6 +496,17 @@ async function assessProjectScript(
       reason: `${executable} run ${scriptName} 会直接执行本地脚本，需要用户确认`,
       executable,
     };
+  }
+
+  if (PACKAGE_MANAGERS.has(scriptExecutable)) {
+    return assessNestedPackageManagerInvocation(
+      executable,
+      scriptName,
+      scriptExecutable,
+      args,
+      scripts,
+      nextSeenScripts,
+    );
   }
 
   if (scriptExecutable === "node" || scriptExecutable === "tsx") {
@@ -444,6 +580,10 @@ async function assessGitCommand(args: string[]): Promise<CommandPolicy> {
   };
 }
 
+function hasForwardedMutatingFlags(args: string[]): boolean {
+  return args.some((arg) => FORWARDED_MUTATING_FLAGS.has(arg.toLowerCase()));
+}
+
 async function assessPackageManagerCommand(
   executable: string,
   args: string[],
@@ -464,14 +604,12 @@ async function assessPackageManagerCommand(
     !GUARDED_PACKAGE_MANAGER_SUBCOMMANDS.has(subcommand)
   ) {
     if (executable === "yarn" && scripts[subcommand]) {
-      if (SAFE_PACKAGE_MANAGER_SCRIPTS.has(subcommand)) {
-        return assessProjectScript(executable, subcommand, scripts[subcommand]);
-      }
-      return {
-        decision: "confirm",
-        reason: `${executable} ${subcommand} 会执行项目脚本，需要用户确认`,
+      return assessProjectScript(
         executable,
-      };
+        subcommand,
+        scripts[subcommand],
+        scripts,
+      );
     }
     return {
       decision: "block",
@@ -489,11 +627,21 @@ async function assessPackageManagerCommand(
   }
 
   if (subcommand === "test") {
-    return {
-      decision: "allow",
-      reason: `${executable} test 属于验证命令`,
-      executable,
-    };
+    if (!scripts.test) {
+      return {
+        decision: "block",
+        reason: `项目中不存在脚本 test`,
+        executable,
+      };
+    }
+    if (hasForwardedMutatingFlags(args.slice(1))) {
+      return {
+        decision: "confirm",
+        reason: `${executable} test 携带可能修改文件或快照的参数，需要用户确认`,
+        executable,
+      };
+    }
+    return assessProjectScript(executable, "test", scripts.test, scripts);
   }
 
   if (subcommand === "run") {
@@ -513,7 +661,19 @@ async function assessPackageManagerCommand(
       };
     }
     if (SAFE_PACKAGE_MANAGER_SCRIPTS.has(scriptName)) {
-      return assessProjectScript(executable, scriptName, scripts[scriptName]);
+      if (hasForwardedMutatingFlags(args.slice(2))) {
+        return {
+          decision: "confirm",
+          reason: `${executable} run ${scriptName} 携带可能修改文件的参数，需要用户确认`,
+          executable,
+        };
+      }
+      return assessProjectScript(
+        executable,
+        scriptName,
+        scripts[scriptName],
+        scripts,
+      );
     }
     if (GUARDED_PACKAGE_MANAGER_SCRIPTS.has(scriptName)) {
       return {
@@ -708,7 +868,7 @@ export const commandTools: ToolDefinition[] = [
           ? [...localToolchainCommand.args, ...args]
           : args,
         {
-          cwd: process.cwd(),
+          cwd: getWorkspaceRoot(),
           reject: false,
           timeout: COMMAND_TIMEOUT_MS,
         },

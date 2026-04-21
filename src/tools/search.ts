@@ -4,6 +4,7 @@ import ts from "typescript";
 import { execa } from "execa";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
 const MAX_MATCHES = 50;
@@ -27,7 +28,9 @@ const IGNORED_DIRECTORIES = new Set([
   ".imports",
   "dist",
 ]);
-const root = process.cwd();
+function getRoot(): string {
+  return getWorkspaceRoot();
+}
 
 type SearchMatch = {
   path: string;
@@ -76,6 +79,7 @@ function resolveSearchRoot(
   targetPath: string,
   confirmed = false,
 ): { fullPath: string; displayBase: string } {
+  const root = getRoot();
   const fullPath = path.resolve(root, targetPath);
   const relativePath = path.relative(root, fullPath);
   const isOutsideWorkspace =

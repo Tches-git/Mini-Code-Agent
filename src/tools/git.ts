@@ -3,6 +3,7 @@ import { execa } from "execa";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
 import { isPathOutsideWorkspace, normalizeFilePath } from "../utils/path.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
 const GIT_TIMEOUT_MS = 30_000;
@@ -31,7 +32,7 @@ function normalizeRepoPath(filePath: string): string {
 
 async function runGit(args: string[]): Promise<GitCommandResult> {
   const result = await execa("git", args, {
-    cwd: process.cwd(),
+    cwd: getWorkspaceRoot(),
     reject: false,
     timeout: GIT_TIMEOUT_MS,
   });

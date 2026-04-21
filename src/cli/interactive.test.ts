@@ -6,9 +6,22 @@ const mockListSessions = vi.hoisted(() => vi.fn());
 const mockRestoreSession = vi.hoisted(() => vi.fn());
 const mockRun = vi.hoisted(() => vi.fn());
 const mockClearHistory = vi.hoisted(() => vi.fn());
+const mockLogAssistant = vi.hoisted(() => vi.fn());
 const mockLogBanner = vi.hoisted(() => vi.fn());
+const mockLogCard = vi.hoisted(() => vi.fn());
+const mockLogCardList = vi.hoisted(() => vi.fn());
+const mockLogDetailEntries = vi.hoisted(() => vi.fn());
+const mockLogEmptyState = vi.hoisted(() => vi.fn());
+const mockLogError = vi.hoisted(() => vi.fn());
+const mockLogHint = vi.hoisted(() => vi.fn());
+const mockLogLine = vi.hoisted(() => vi.fn());
+const mockLogSection = vi.hoisted(() => vi.fn());
+const mockLogSuccess = vi.hoisted(() => vi.fn());
 const mockSpinnerStart = vi.hoisted(() => vi.fn());
 const mockSpinnerStop = vi.hoisted(() => vi.fn());
+const mockSetWorkspaceRoot = vi.hoisted(() => vi.fn());
+const mockGetWorkspaceRoot = vi.hoisted(() => vi.fn(() => "/tmp/workspace"));
+const mockGetAppDataDir = vi.hoisted(() => vi.fn(() => "/tmp/home/.mini-claude-code"));
 
 vi.mock("node:readline/promises", () => ({
   createInterface: vi.fn(() => ({
@@ -36,16 +49,33 @@ vi.mock("../agent/orchestrator.js", () => ({
   },
 }));
 
+vi.mock("../utils/runtime.js", () => ({
+  setWorkspaceRoot: mockSetWorkspaceRoot,
+  getWorkspaceRoot: mockGetWorkspaceRoot,
+  getAppDataDir: mockGetAppDataDir,
+  getWorkspaceStateDir: () => "/tmp/home/.mini-claude-code/workspaces/demo",
+}));
+
 vi.mock("../utils/logger.js", () => ({
-  logAssistant: vi.fn(),
+  logAssistant: mockLogAssistant,
   logAutoFix: vi.fn(),
   logAutoValidate: vi.fn(),
   logAutoValidateSkipped: vi.fn(),
   logBanner: mockLogBanner,
+  logCard: mockLogCard,
+  logCardList: mockLogCardList,
   logContextTrimmed: vi.fn(),
+  logDetailEntries: mockLogDetailEntries,
   logDiffHeader: vi.fn(),
   logDiffLine: vi.fn(),
+  logEmptyState: mockLogEmptyState,
+  logError: mockLogError,
   logFileModified: vi.fn(),
+  logHint: mockLogHint,
+  logKeyValue: vi.fn(),
+  logLine: mockLogLine,
+  logSection: mockLogSection,
+  logSuccess: mockLogSuccess,
   logToolCall: vi.fn(),
   logToolError: vi.fn(),
   logToolResult: vi.fn(),
@@ -55,9 +85,19 @@ vi.mock("../utils/logger.js", () => ({
   },
 }));
 
-import { startInteractive } from "./interactive.js";
+import { describeApprovalRequest, startInteractive } from "./interactive.js";
 
 describe("startInteractive", () => {
+  it("shows workspace and app data hints on startup", async () => {
+    mockQuestion.mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive({ cwd: "/tmp/demo" });
+
+    expect(mockSetWorkspaceRoot).toHaveBeenCalledWith("/tmp/demo");
+    expect(mockLogHint).toHaveBeenCalledWith(expect.stringContaining("当前工作区"));
+    expect(mockLogHint).toHaveBeenCalledWith(expect.stringContaining("用户数据目录"));
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
     mockQuestion.mockReset();
@@ -66,9 +106,22 @@ describe("startInteractive", () => {
     mockRestoreSession.mockReset().mockResolvedValue(false);
     mockRun.mockReset();
     mockClearHistory.mockReset();
+    mockLogAssistant.mockReset();
     mockLogBanner.mockReset();
+    mockLogCard.mockReset();
+    mockLogCardList.mockReset();
+    mockLogDetailEntries.mockReset();
+    mockLogEmptyState.mockReset();
+    mockLogError.mockReset();
+    mockLogHint.mockReset();
+    mockLogLine.mockReset();
+    mockLogSection.mockReset();
+    mockLogSuccess.mockReset();
     mockSpinnerStart.mockReset();
     mockSpinnerStop.mockReset();
+    mockSetWorkspaceRoot.mockReset();
+    mockGetWorkspaceRoot.mockReset().mockReturnValue("/tmp/workspace");
+    mockGetAppDataDir.mockReset().mockReturnValue("/tmp/home/.mini-claude-code");
     vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
@@ -92,11 +145,10 @@ describe("startInteractive", () => {
     await startInteractive();
 
     expect(mockListSessions).toHaveBeenCalledTimes(1);
-    expect(console.log).toHaveBeenCalledWith(
-      expect.stringContaining("可恢复会话"),
-    );
-    expect(console.log).toHaveBeenCalledWith(
-      expect.stringContaining("session-1"),
+    expect(mockLogCardList).toHaveBeenCalledWith(
+      "可恢复会话",
+      expect.arrayContaining([expect.stringContaining("session-1")]),
+      { emptyText: "当前没有可恢复的会话。" },
     );
   });
 
@@ -109,7 +161,7 @@ describe("startInteractive", () => {
     await startInteractive();
 
     expect(mockRestoreSession).toHaveBeenCalledWith("abc123");
-    expect(console.log).toHaveBeenCalledWith(
+    expect(mockLogSuccess).toHaveBeenCalledWith(
       expect.stringContaining("已恢复会话 abc123"),
     );
   });
@@ -121,7 +173,7 @@ describe("startInteractive", () => {
     await startInteractive({ resumeSessionId: "saved-1" });
 
     expect(mockRestoreSession).toHaveBeenCalledWith("saved-1");
-    expect(console.log).toHaveBeenCalledWith(
+    expect(mockLogSuccess).toHaveBeenCalledWith(
       expect.stringContaining("已恢复会话 saved-1"),
     );
   });
@@ -133,7 +185,7 @@ describe("startInteractive", () => {
 
     await startInteractive();
 
-    expect(console.log).toHaveBeenCalledWith(
+    expect(mockLogHint).toHaveBeenCalledWith(
       expect.stringContaining("mini-claude-code init"),
     );
   });
@@ -145,8 +197,65 @@ describe("startInteractive", () => {
 
     await startInteractive();
 
-    expect(console.log).toHaveBeenCalledWith(
+    expect(mockLogHint).toHaveBeenCalledWith(
       expect.stringContaining("mini-claude-code doctor"),
+    );
+  });
+
+  it("unknown slash command uses error block", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/wat")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockLogError).toHaveBeenCalledWith(
+      expect.stringContaining("未知命令"),
+    );
+  });
+
+  it("clear command resets history with success block", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/clear")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockClearHistory).toHaveBeenCalledTimes(1);
+    expect(mockLogSuccess).toHaveBeenCalledWith(
+      expect.stringContaining("上下文已清空"),
+    );
+  });
+
+  it("successful task shows completion card before assistant output", async () => {
+    mockRun.mockResolvedValue({
+      diffs: [],
+      finalText: "完成结果",
+    });
+    mockQuestion
+      .mockResolvedValueOnce("修复问题")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockLogCard).toHaveBeenCalledWith("执行完成");
+    expect(mockLogEmptyState).toHaveBeenCalledWith("本轮没有文件变更。");
+    expect(mockLogAssistant).toHaveBeenCalledWith("完成结果");
+  });
+
+  it("approval prompt metadata includes risk level and default policy details", () => {
+    const description = describeApprovalRequest({
+      kind: "command",
+      command: "npm run lint",
+      reason: "需要安装依赖",
+    } as never);
+
+    expect(description.riskLevel).toBe("高");
+    expect(description.defaultPolicy).toContain("默认拒绝");
+    expect(description.detailLines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "原因", value: "需要安装依赖" }),
+      ]),
     );
   });
 });

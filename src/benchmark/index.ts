@@ -4,10 +4,12 @@ import { performance } from "node:perf_hooks";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { isValidationCommand } from "../agent/validation.js";
 import type { AgentEvent, ApprovalRequest } from "../types/agent.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 import {
   type BenchmarkIsolationConfig,
   prepareBenchmarkIsolation,
 } from "./isolation.js";
+import { resolveBenchmarkReportPath, withBenchmarkWorkspace } from "./runtime.js";
 import {
   type BenchmarkTask,
   type BenchmarkTaskPrecondition,
@@ -140,7 +142,7 @@ export function normalizeModifiedPath(filePath: string): string {
     return filePath.split(path.sep).join(path.posix.sep);
   }
 
-  const relativePath = path.relative(process.cwd(), filePath);
+  const relativePath = path.relative(getWorkspaceRoot(), filePath);
   if (
     !relativePath ||
     relativePath.startsWith("..") ||
@@ -238,7 +240,7 @@ function average(values: number[]): number {
 async function evaluatePrecondition(
   precondition: BenchmarkTaskPrecondition,
 ): Promise<string | null> {
-  const targetPath = path.join(process.cwd(), precondition.path);
+  const targetPath = path.join(getWorkspaceRoot(), precondition.path);
   const content = await readFile(targetPath, "utf8");
 
   if (precondition.includes?.some((snippet) => !content.includes(snippet))) {
@@ -462,102 +464,99 @@ export async function runBenchmark(
   const results: BenchmarkTaskResult[] = [];
   for (const task of selectedTasks) {
     const isolation = await prepareBenchmarkIsolation(task, options?.isolation);
-    const originalCwd = process.cwd();
     try {
-      process.chdir(isolation.workspacePath);
+      await withBenchmarkWorkspace(isolation.workspacePath, async () => {
+        const preconditionFailureReason = await getPreconditionFailureReason(task);
+        if (preconditionFailureReason) {
+          results.push({
+            id: task.id,
+            title: task.title,
+            category: task.category,
+            prompt: task.prompt,
+            passed: false,
+            skipped: true,
+            skipReason: preconditionFailureReason,
+            failureType: "skip",
+            durationMs: 0,
+            finalText: preconditionFailureReason,
+            stepsCount: 0,
+            metrics: createMetrics(),
+            expectationChecks: {
+              finalTextIncludes: [],
+              finalTextIncludesAny: [],
+              minToolCallsMet: true,
+              maxDiffsMet: true,
+              maxValidationRunsMet: true,
+              minValidationRunsMet: true,
+              minAutoFixesMet: true,
+              expectedModifiedFilesMissing: [],
+              forbiddenModifiedFilesPresent: [],
+              mustPassValidationMet: true,
+            },
+          });
+          return;
+        }
 
-      const preconditionFailureReason =
-        await getPreconditionFailureReason(task);
-      if (preconditionFailureReason) {
-        results.push({
-          id: task.id,
-          title: task.title,
-          category: task.category,
-          prompt: task.prompt,
-          passed: false,
-          skipped: true,
-          skipReason: preconditionFailureReason,
-          failureType: "skip",
-          durationMs: 0,
-          finalText: preconditionFailureReason,
-          stepsCount: 0,
-          metrics: createMetrics(),
-          expectationChecks: {
-            finalTextIncludes: [],
-            finalTextIncludesAny: [],
-            minToolCallsMet: true,
-            maxDiffsMet: true,
-            maxValidationRunsMet: true,
-            minValidationRunsMet: true,
-            minAutoFixesMet: true,
-            expectedModifiedFilesMissing: [],
-            forbiddenModifiedFilesPresent: [],
-            mustPassValidationMet: true,
-          },
+        const metrics = createMetrics();
+        const agent = new AgentOrchestrator({
+          onEvent: onBenchmarkEvent(metrics),
+          onConfirmCommand: createAutoApproveHandler(),
         });
-        continue;
-      }
 
-      const metrics = createMetrics();
-      const agent = new AgentOrchestrator({
-        onEvent: onBenchmarkEvent(metrics),
-        onConfirmCommand: createAutoApproveHandler(),
+        try {
+          const start = performance.now();
+          const result = await agent.run(task.prompt);
+          const durationMs = performance.now() - start;
+          const expectationChecks = evaluateTask(task, result.finalText, metrics);
+
+          const failureType = expectationChecks.passed
+            ? "none"
+            : inferFailureType(task, result.finalText, expectationChecks);
+
+          results.push({
+            id: task.id,
+            title: task.title,
+            category: task.category,
+            prompt: task.prompt,
+            passed: expectationChecks.passed,
+            failureType,
+            durationMs: round(durationMs),
+            finalText: result.finalText,
+            stepsCount: result.steps.length,
+            metrics: { ...metrics },
+            expectationChecks: {
+              finalTextIncludes: expectationChecks.finalTextIncludes,
+              finalTextIncludesAny: expectationChecks.finalTextIncludesAny,
+              minToolCallsMet: expectationChecks.minToolCallsMet,
+              maxDiffsMet: expectationChecks.maxDiffsMet,
+              maxValidationRunsMet: expectationChecks.maxValidationRunsMet,
+              minValidationRunsMet: expectationChecks.minValidationRunsMet,
+              minAutoFixesMet: expectationChecks.minAutoFixesMet,
+              expectedModifiedFilesMissing:
+                expectationChecks.expectedModifiedFilesMissing,
+              forbiddenModifiedFilesPresent:
+                expectationChecks.forbiddenModifiedFilesPresent,
+              mustPassValidationMet: expectationChecks.mustPassValidationMet,
+            },
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          results.push({
+            id: task.id,
+            title: task.title,
+            category: task.category,
+            prompt: task.prompt,
+            passed: false,
+            failureType: inferRuntimeErrorFailureType(message),
+            durationMs: 0,
+            finalText: message,
+            stepsCount: 0,
+            metrics: { ...metrics },
+            expectationChecks: createPassingExpectationChecks(),
+          });
+        }
       });
-
-      try {
-        const start = performance.now();
-        const result = await agent.run(task.prompt);
-        const durationMs = performance.now() - start;
-        const expectationChecks = evaluateTask(task, result.finalText, metrics);
-
-        const failureType = expectationChecks.passed
-          ? "none"
-          : inferFailureType(task, result.finalText, expectationChecks);
-
-        results.push({
-          id: task.id,
-          title: task.title,
-          category: task.category,
-          prompt: task.prompt,
-          passed: expectationChecks.passed,
-          failureType,
-          durationMs: round(durationMs),
-          finalText: result.finalText,
-          stepsCount: result.steps.length,
-          metrics: { ...metrics },
-          expectationChecks: {
-            finalTextIncludes: expectationChecks.finalTextIncludes,
-            finalTextIncludesAny: expectationChecks.finalTextIncludesAny,
-            minToolCallsMet: expectationChecks.minToolCallsMet,
-            maxDiffsMet: expectationChecks.maxDiffsMet,
-            maxValidationRunsMet: expectationChecks.maxValidationRunsMet,
-            minValidationRunsMet: expectationChecks.minValidationRunsMet,
-            minAutoFixesMet: expectationChecks.minAutoFixesMet,
-            expectedModifiedFilesMissing:
-              expectationChecks.expectedModifiedFilesMissing,
-            forbiddenModifiedFilesPresent:
-              expectationChecks.forbiddenModifiedFilesPresent,
-            mustPassValidationMet: expectationChecks.mustPassValidationMet,
-          },
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        results.push({
-          id: task.id,
-          title: task.title,
-          category: task.category,
-          prompt: task.prompt,
-          passed: false,
-          failureType: inferRuntimeErrorFailureType(message),
-          durationMs: 0,
-          finalText: message,
-          stepsCount: 0,
-          metrics: { ...metrics },
-          expectationChecks: createPassingExpectationChecks(),
-        });
-      }
     } finally {
-      process.chdir(originalCwd);
       await isolation.cleanup();
     }
   }
@@ -604,9 +603,7 @@ export async function runBenchmark(
     tasks: results,
   };
 
-  const outputPath =
-    options?.outputPath ||
-    path.join(process.cwd(), ".mini-claude-code", "benchmark-report.json");
+  const outputPath = resolveBenchmarkReportPath(options?.outputPath);
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, JSON.stringify(report, null, 2), "utf8");
 

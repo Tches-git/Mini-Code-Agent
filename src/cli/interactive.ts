@@ -10,16 +10,26 @@ import {
   logAutoValidate,
   logAutoValidateSkipped,
   logBanner,
+  logCard,
+  logCardList,
   logContextTrimmed,
+  logDetailEntries,
   logDiffHeader,
   logDiffLine,
+  logEmptyState,
+  logError,
   logFileModified,
+  logHint,
+  logLine,
+  logSection,
+  logSuccess,
   logToolCall,
   logToolError,
   logToolResult,
   Spinner,
 } from "../utils/logger.js";
 import { parseApprovalLogQueryText, printApprovalLog } from "./approval-log.js";
+import { getAppDataDir, getWorkspaceRoot, setWorkspaceRoot } from "../utils/runtime.js";
 
 const SLASH_COMMANDS = {
   "/exit": "退出交互模式",
@@ -47,12 +57,11 @@ function getSlashCommandName(input: string): string | null {
 }
 
 function printHelp() {
-  console.log();
-  console.log(chalk.cyan.bold("  可用命令:"));
-  for (const [cmd, desc] of Object.entries(SLASH_COMMANDS)) {
-    console.log(chalk.yellow(`    ${cmd.padEnd(10)}`) + chalk.gray(desc));
-  }
-  console.log(chalk.gray("    其他输入将作为任务发送给 Agent"));
+  logCardList(
+    "可用命令",
+    Object.entries(SLASH_COMMANDS).map(([cmd, desc]) => `**${cmd}** ${desc}`),
+  );
+  logHint("其他输入将作为任务发送给 Agent。");
   console.log();
 }
 
@@ -98,20 +107,24 @@ function handleEvent(event: AgentEvent, spinner: Spinner) {
   }
 }
 
-function describeApprovalRequest(request: ApprovalRequest): {
+export function describeApprovalRequest(request: ApprovalRequest): {
   title: string;
   primary: string;
-  detailLines: string[];
+  detailLines: Array<{ label: string; value: string }>;
   promptLabel: string;
   resultLabel: string;
+  riskLevel: "低" | "中" | "高";
+  defaultPolicy: string;
 } {
   if (request.kind === "command") {
     return {
       title: "需要确认的命令",
       primary: request.command,
-      detailLines: [`原因: ${request.reason}`],
+      detailLines: [{ label: "原因", value: request.reason }],
       promptLabel: "允许执行?",
       resultLabel: "执行",
+      riskLevel: "高",
+      defaultPolicy: "默认拒绝，除非明确批准。",
     };
   }
 
@@ -120,12 +133,14 @@ function describeApprovalRequest(request: ApprovalRequest): {
       title: "需要打开工作区外文件",
       primary: request.path,
       detailLines: [
-        `打开后缓存到: ${request.destinationPath}`,
-        `模式: ${request.mode === "extract_text" ? "提取文本" : "复制原文件"}`,
-        `原因: ${request.reason}`,
+        { label: "缓存位置", value: request.destinationPath },
+        { label: "模式", value: request.mode === "extract_text" ? "提取文本" : "复制原文件" },
+        { label: "原因", value: request.reason },
       ],
       promptLabel: "允许打开?",
       resultLabel: "打开",
+      riskLevel: "中",
+      defaultPolicy: "默认拒绝，避免误读取工作区外内容。",
     };
   }
 
@@ -150,8 +165,18 @@ function describeApprovalRequest(request: ApprovalRequest): {
     title,
     primary: request.path,
     detailLines: [
-      `操作: ${request.action === "list" ? "列目录" : request.action === "read" ? "读取内容" : request.action === "search" ? "搜索目录" : "写入或修改"}`,
-      `原因: ${request.reason}`,
+      {
+        label: "操作",
+        value:
+          request.action === "list"
+            ? "列目录"
+            : request.action === "read"
+              ? "读取内容"
+              : request.action === "search"
+                ? "搜索目录"
+                : "写入或修改",
+      },
+      { label: "原因", value: request.reason },
     ],
     promptLabel,
     resultLabel:
@@ -162,6 +187,13 @@ function describeApprovalRequest(request: ApprovalRequest): {
           : request.action === "read"
             ? "读取"
             : "打开",
+    riskLevel: request.action === "write" ? "高" : request.action === "search" ? "中" : "低",
+    defaultPolicy:
+      request.action === "write"
+        ? "默认拒绝，避免修改工作区外内容。"
+        : request.action === "search"
+          ? "默认拒绝，避免扫描工作区外目录。"
+          : "默认拒绝，需明确批准后继续。",
   };
 }
 
@@ -169,35 +201,45 @@ export async function startInteractive(options?: {
   autoApprove?: boolean;
   resume?: boolean;
   resumeSessionId?: string;
+  cwd?: string;
 }) {
+  setWorkspaceRoot(options?.cwd || process.cwd());
   const rl = readline.createInterface({ input, output, terminal: true });
   const spinner = new Spinner();
   const confirmAction = async (request: ApprovalRequest): Promise<boolean> => {
     spinner.stop();
     const description = describeApprovalRequest(request);
     if (options?.autoApprove) {
-      console.log(chalk.green(`\n  ✔ 已自动确认: ${description.primary}`));
-      for (const detailLine of description.detailLines) {
-        console.log(chalk.gray(`  ${detailLine}`));
-      }
+      logCard("已自动确认");
+      logCardList("目标", [description.primary]);
+      logDetailEntries(
+        [
+          { label: "风险级别", value: description.riskLevel },
+          { label: "默认策略", value: description.defaultPolicy },
+          ...description.detailLines,
+        ],
+        "    ",
+      );
       console.log();
       return true;
     }
 
-    console.log(chalk.yellow(`\n  ${description.title}`));
-    console.log(chalk.white(`  ${description.primary}`));
-    for (const detailLine of description.detailLines) {
-      console.log(chalk.gray(`  ${detailLine}`));
-    }
+    logCard(description.title);
+    logCardList("目标", [description.primary]);
+    logDetailEntries(
+      [
+        { label: "风险级别", value: description.riskLevel },
+        { label: "默认策略", value: description.defaultPolicy },
+        ...description.detailLines,
+      ],
+      "    ",
+    );
     const answer = await rl.question(
       chalk.cyan.bold(`  ${description.promptLabel} [y/N] `),
     );
     const approved = /^(y|yes)$/i.test(answer.trim());
-    console.log(
-      approved
-        ? chalk.green(`  ✔ 已确认${description.resultLabel}\n`)
-        : chalk.red(`  ✖ 已拒绝${description.resultLabel}\n`),
-    );
+    approved ? logSuccess(`已确认${description.resultLabel}`) : logError(`已拒绝${description.resultLabel}`);
+    console.log();
     return approved;
   };
 
@@ -207,18 +249,20 @@ export async function startInteractive(options?: {
   });
 
   logBanner();
+  logHint(`当前工作区: ${getWorkspaceRoot()}`);
+  logHint(`用户数据目录: ${getAppDataDir()}`);
+  console.log();
 
   if (options?.resume || options?.resumeSessionId) {
     const restored = await agent.restoreSession(options.resumeSessionId);
     if (restored) {
-      console.log(
-        chalk.green(
-          `  ✔ 已恢复${options.resumeSessionId ? `会话 ${options.resumeSessionId}` : "上次会话"}（${agent.turnCount} 轮对话）\n`,
-        ),
+      logSuccess(
+        `已恢复${options.resumeSessionId ? `会话 ${options.resumeSessionId}` : "上次会话"}（${agent.turnCount} 轮对话）`,
       );
     } else {
-      console.log(chalk.gray("  没有可恢复的会话，开始新对话\n"));
+      logEmptyState("没有可恢复的会话，开始新对话。");
     }
+    console.log();
   }
 
   const prompt = () => chalk.cyan.bold("  > ");
@@ -238,29 +282,29 @@ export async function startInteractive(options?: {
     if (resumeMatch) {
       const sessionId = resumeMatch[1]?.trim() ?? "";
       if (!sessionId) {
-        console.log(chalk.red("  用法: /resume <session-id>\n"));
+        logError("用法: /resume <session-id>");
+        console.log();
         continue;
       }
       const restored = await agent.restoreSession(sessionId);
-      console.log(
-        restored
-          ? chalk.green(
-              `  ✔ 已恢复会话 ${sessionId}（${agent.turnCount} 轮对话）\n`,
-            )
-          : chalk.red(`  ✖ 未找到会话 ${sessionId}\n`),
-      );
+      restored
+        ? logSuccess(`已恢复会话 ${sessionId}（${agent.turnCount} 轮对话）`)
+        : logError(`未找到会话 ${sessionId}`);
+      console.log();
       continue;
     }
 
     const slashCommand = getSlashCommandName(trimmed);
 
     if (slashCommand === "/exit" || slashCommand === "/quit") {
-      console.log(chalk.gray("\n  再见 👋\n"));
+      logHint("再见 👋");
+      console.log();
       break;
     }
     if (slashCommand === "/clear") {
       agent.clearHistory();
-      console.log(chalk.green("  ✔ 上下文已清空，开始新会话\n"));
+      logSuccess("上下文已清空，开始新会话");
+      console.log();
       continue;
     }
     if (slashCommand === "/help") {
@@ -268,15 +312,13 @@ export async function startInteractive(options?: {
       continue;
     }
     if (slashCommand === "/init") {
-      console.log(
-        chalk.gray("  请在终端中运行 `mini-claude-code init` 生成 .env 模板。\n"),
-      );
+      logHint("请在终端中运行 `mini-claude-code init` 生成 .env 模板。");
+      console.log();
       continue;
     }
     if (slashCommand === "/doctor") {
-      console.log(
-        chalk.gray("  请在终端中运行 `mini-claude-code doctor` 检查安装与环境配置。\n"),
-      );
+      logHint("请在终端中运行 `mini-claude-code doctor --ping` 检查安装、环境配置与 LLM 连通性。");
+      console.log();
       continue;
     }
     if (slashCommand === "/approvals") {
@@ -293,63 +335,55 @@ export async function startInteractive(options?: {
     }
     if (slashCommand === "/sessions") {
       const sessions = await listSessions();
-      console.log();
-      if (sessions.length === 0) {
-        console.log(chalk.gray("  当前没有可恢复的会话。\n"));
-        continue;
-      }
-      console.log(chalk.cyan.bold("  可恢复会话"));
-      for (const session of sessions.slice(0, 10)) {
-        console.log(
-          chalk.yellow(`  ${session.id}`) +
-            chalk.gray(` (${session.updatedAt}, turns=${session.turnCount})`) +
-            chalk.white(` ${session.title}`),
-        );
-      }
+      logCardList(
+        "可恢复会话",
+        sessions.slice(0, 10).map(
+          (session) =>
+            `**${session.id}** · ${session.title} · ${session.updatedAt} · ${session.turnCount} 轮`,
+        ),
+        { emptyText: "当前没有可恢复的会话。" },
+      );
       console.log();
       continue;
     }
     if (slashCommand === "/resume") {
       const sessionId = trimmed.replace(/^\/resume\b/, "").trim();
       if (!sessionId) {
-        console.log(chalk.red("  用法: /resume <session-id>\n"));
+        logError("用法: /resume <session-id>");
+        console.log();
         continue;
       }
       const restored = await agent.restoreSession(sessionId);
-      console.log(
-        restored
-          ? chalk.green(
-              `  ✔ 已恢复会话 ${sessionId}（${agent.turnCount} 轮对话）\n`,
-            )
-          : chalk.red(`  ✖ 未找到会话 ${sessionId}\n`),
-      );
+      restored
+        ? logSuccess(`已恢复会话 ${sessionId}（${agent.turnCount} 轮对话）`)
+        : logError(`未找到会话 ${sessionId}`);
+      console.log();
       continue;
     }
     if (slashCommand) {
-      console.log(chalk.red(`  未知命令: ${trimmed}，输入 /help 查看帮助\n`));
+      logError(`未知命令: ${trimmed}，输入 /help 查看帮助`);
+      console.log();
       continue;
     }
 
     try {
       const result = await agent.run(trimmed);
       spinner.stop();
+      logCard("执行完成");
       if (result.diffs.length > 0) {
-        console.log(chalk.cyan("\n  ─── 变更预览 ───"));
+        logSection("变更预览");
         for (const d of result.diffs) {
           logDiffHeader(d.path, d.summary);
           for (const l of d.diff.split("\n")) logDiffLine(l);
         }
+      } else {
+        logEmptyState("本轮没有文件变更。");
       }
       logAssistant(result.finalText);
     } catch (error) {
       spinner.stop();
-      console.log(
-        chalk.red(
-          "\n  ✖ " +
-            (error instanceof Error ? error.message : String(error)) +
-            "\n",
-        ),
-      );
+      logError(error instanceof Error ? error.message : String(error));
+      console.log();
     }
   }
 

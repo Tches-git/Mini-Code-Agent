@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { ChatMessage } from "../types/agent.js";
+import { getWorkspaceStateDir } from "../utils/runtime.js";
 import type { SummaryFocus } from "./summary.js";
 
 function getSessionDir(): string {
   return process.env.MINI_CLAUDE_CODE_SESSION_DIR?.trim()
     ? path.resolve(process.env.MINI_CLAUDE_CODE_SESSION_DIR)
-    : path.join(process.cwd(), ".mini-claude-code", "sessions");
+    : path.join(getWorkspaceStateDir(), "sessions");
 }
 
 function getSessionIndexFile(): string {

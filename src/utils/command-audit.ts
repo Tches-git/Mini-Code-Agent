@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { getWorkspaceStateDir } from "./runtime.js";
 
 export type CommandAuditDecision = "approved" | "rejected" | "blocked";
 export type CommandAuditSource = "tool" | "auto_validate" | "policy";
@@ -36,8 +37,7 @@ export type CommandAuditQuery = {
 };
 
 const DEFAULT_AUDIT_LOG_PATH = path.join(
-  process.cwd(),
-  ".mini-claude-code",
+  getWorkspaceStateDir(),
   "command-approvals.ndjson",
 );
 

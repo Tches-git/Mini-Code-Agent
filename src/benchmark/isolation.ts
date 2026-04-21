@@ -1,6 +1,7 @@
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 import type { BenchmarkTask } from "./tasks.js";
 
 const DEFAULT_EXCLUDES = [
@@ -36,10 +37,14 @@ async function injectTaskBaseline(
   if (task.id === "fix-readme-command") {
     const readmePath = path.join(workspacePath, "README.md");
     const content = await readFile(readmePath, "utf8");
-    const nextContent = content.replace(
+    const nextContent = content.includes(
       "npm run chat -- --resume-session <session-id>",
-      "npm run chat -- --resume <session-id>",
-    );
+    )
+      ? content.replace(
+          "npm run chat -- --resume-session <session-id>",
+          "npm run chat -- --resume <session-id>",
+        )
+      : `${content.trimEnd()}\n\nbench-invalid-resume-command\n\`\`\`bash\nnpm run chat -- --resume <session-id>\n\`\`\`\n`;
     if (nextContent !== content) {
       await writeFile(readmePath, nextContent, "utf8");
     }
@@ -49,10 +54,7 @@ async function injectTaskBaseline(
   if (task.id === "fix-ts-type-error") {
     const targetPath = path.join(workspacePath, "src/types/agent.ts");
     const content = await readFile(targetPath, "utf8");
-    const nextContent = content.replace(
-      "// __BENCHMARK_TS_FIXED__\nexport const __BENCHMARK_TS_ERROR__ = 0;",
-      '// __BENCHMARK_TS_ERROR__\nexport const __BENCHMARK_TS_ERROR__: number = "broken";',
-    );
+    const nextContent = `${content.trimEnd()}\n\n// __BENCHMARK_TS_ERROR__\nexport const __BENCHMARK_TS_ERROR__: number = "broken";\n`;
     if (nextContent !== content) {
       await writeFile(targetPath, nextContent, "utf8");
     }
@@ -93,7 +95,7 @@ async function injectTaskBaseline(
     const targetPath = path.join(workspacePath, "src/utils/token.ts");
     const content = await readFile(targetPath, "utf8");
     const nextContent = content.replace(
-      "const ENGLISH_CHAR_WEIGHT = 3 / 10;",
+      /const ENGLISH_CHAR_WEIGHT = [^;]+;/,
       "const ENGLISH_CHAR_WEIGHT = 0.6;",
     );
     if (nextContent !== content) {
@@ -119,7 +121,7 @@ async function createTempWorkspaceCopy(options?: {
   sourcePath?: string;
   baseTempDir?: string;
 }): Promise<string> {
-  const sourcePath = options?.sourcePath || process.cwd();
+  const sourcePath = options?.sourcePath || getWorkspaceRoot();
   const parentDir =
     options?.baseTempDir ||
     path.join(os.tmpdir(), "mini-claude-code-benchmark-");
@@ -148,7 +150,7 @@ export async function prepareBenchmarkIsolation(
 
   if (mode === "temp_copy" && shouldIsolate(task)) {
     const workspacePath = await createTempWorkspaceCopy({
-      sourcePath: process.cwd(),
+      sourcePath: getWorkspaceRoot(),
       baseTempDir: options?.baseTempDir,
     });
     await injectTaskBaseline(task, workspacePath);
@@ -164,7 +166,7 @@ export async function prepareBenchmarkIsolation(
 
   return {
     mode: "in_place",
-    workspacePath: process.cwd(),
+    workspacePath: getWorkspaceRoot(),
     cleanup: async () => {},
   };
 }

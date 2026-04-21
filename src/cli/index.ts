@@ -1,20 +1,26 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { Command } from "commander";
 import { execa } from "execa";
 import { fileURLToPath } from "node:url";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
+import { LlmClient } from "../llm/client.js";
 import { getRuntimeEnvInfo, writeEnvTemplate } from "../llm/env.js";
 import {
   logDiffHeader,
   logDiffLine,
+  logEmptyState,
   logError,
-  logLine,
+  logHint,
+  logKeyValue,
   logSection,
+  logStatusLine,
   logStep,
   logSuccess,
 } from "../utils/logger.js";
-import { type ApprovalLogFilters, printApprovalLog } from "./approval-log.js";
+import { getAppDataDir, getWorkspaceRoot, setWorkspaceRoot } from "../utils/runtime.js";
+import { parseApprovalLogQueryText, type ApprovalLogFilters, printApprovalLog } from "./approval-log.js";
 import { runBenchmarkCommand } from "./benchmark.js";
 import { startInteractive } from "./interactive.js";
 import { printSessionDetail, printSessions } from "./sessions.js";
@@ -37,7 +43,7 @@ const CLI_VERSION = getCliVersion();
 
 function configureHelp() {
   program.showHelpAfterError(
-    "\n示例: mini-claude-code init && mini-claude-code doctor",
+    "\n示例: mini-claude-code init && mini-claude-code doctor --ping",
   );
   program.addHelpText(
     "after",
@@ -46,6 +52,7 @@ function configureHelp() {
   $ mini-claude-code --version
   $ mini-claude-code init
   $ mini-claude-code doctor
+  $ mini-claude-code doctor --ping
   $ mini-claude-code -i
   $ mini-claude-code "分析当前项目结构"
 `,
@@ -60,15 +67,29 @@ function parsePositiveInteger(value: string): number {
   return parsed;
 }
 
-async function runInitCommand(options: { force?: boolean }) {
+function resolveWorkspaceOption(workspace?: string): string {
+  return path.resolve(workspace?.trim() || process.cwd());
+}
+
+function applyWorkspaceRoot(workspace?: string): string {
+  return setWorkspaceRoot(resolveWorkspaceOption(workspace));
+}
+
+function logWorkspaceContext() {
+  logKeyValue("工作区", getWorkspaceRoot());
+  logKeyValue("用户数据目录", getAppDataDir());
+}
+
+export async function runInitCommand(options: { force?: boolean; cwd?: string }) {
+  applyWorkspaceRoot(options.cwd);
   try {
-    const result = await writeEnvTemplate({ force: Boolean(options.force) });
+    const result = await writeEnvTemplate({ cwd: getWorkspaceRoot(), force: Boolean(options.force) });
     logSection("初始化完成");
-    logSuccess(
-      `${result.overwritten ? "已覆盖" : "已创建"} ${result.path}`,
-    );
-    logLine(
-      "下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `mini-claude-code doctor`。",
+    logWorkspaceContext();
+    logKeyValue("结果", result.overwritten ? "已覆盖" : "已创建");
+    logKeyValue("路径", result.path);
+    logHint(
+      "下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `mini-claude-code doctor --ping`。",
     );
   } catch (error) {
     if (
@@ -86,7 +107,8 @@ async function runInitCommand(options: { force?: boolean }) {
   }
 }
 
-async function runDoctorCommand(options: { json?: boolean }) {
+export async function runDoctorCommand(options: { json?: boolean; ping?: boolean; cwd?: string }) {
+  applyWorkspaceRoot(options.cwd);
   const runtime = getRuntimeEnvInfo();
   const checks: Array<{
     name: string;
@@ -154,6 +176,25 @@ async function runDoctorCommand(options: { json?: boolean }) {
     });
   }
 
+  if (options.ping) {
+    if (!runtime.openaiApiKeyConfigured) {
+      checks.push({
+        name: "LLM API 连通性",
+        ok: false,
+        detail: "缺少 OPENAI_API_KEY，无法执行在线连通性检查",
+        required: true,
+      });
+    } else {
+      const connectivity = await new LlmClient().checkConnectivity();
+      checks.push({
+        name: "LLM API 连通性",
+        ok: connectivity.ok,
+        detail: connectivity.detail,
+        required: true,
+      });
+    }
+  }
+
   const allRequiredChecksPassed = checks.every(
     (check) => !check.required || check.ok,
   );
@@ -176,11 +217,19 @@ async function runDoctorCommand(options: { json?: boolean }) {
   }
 
   logSection("环境自检");
+  logWorkspaceContext();
+  logKeyValue("整体状态", allRequiredChecksPassed ? "通过" : "存在失败项");
+  logKeyValue("检查总数", String(checks.length));
+  logSection("检查详情");
   for (const check of checks) {
-    (check.ok ? logSuccess : logError)(`${check.name}: ${check.detail}`);
+    logStatusLine(check.ok ? "PASS" : "FAIL", check.name);
+    logKeyValue("详情", check.detail, "    ");
+    if (check.required) {
+      logKeyValue("级别", "必需", "    ");
+    }
   }
   if (!runtime.openaiApiKeyConfigured) {
-    logLine("提示: 可先运行 `mini-claude-code init` 生成 .env，再填写 OPENAI_API_KEY。");
+    logHint("可先运行 `mini-claude-code init` 生成 .env，再填写 OPENAI_API_KEY。");
   }
   if (!allRequiredChecksPassed) {
     process.exitCode = 1;
@@ -189,26 +238,33 @@ async function runDoctorCommand(options: { json?: boolean }) {
 
 program
   .command("init")
-  .description("在当前目录生成 .env 配置模板")
+  .description("在当前目录或指定工作区生成 .env 配置模板")
   .option("-f, --force", "覆盖已有 .env")
+  .option("--cwd <path>", "指定目标工作区目录")
   .addHelpText(
     "after",
-    "\n下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `mini-claude-code doctor`。\n",
+    "\n下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `mini-claude-code doctor --ping`。\n",
   )
-  .action(async (options: { force?: boolean }) => {
-    await runInitCommand({ force: Boolean(options.force) });
+  .action(async (options: { force?: boolean; cwd?: string }) => {
+    await runInitCommand({ force: Boolean(options.force), cwd: options.cwd });
   });
 
 program
   .command("doctor")
-  .description("检查本地 CLI 运行环境与配置")
+  .description("检查指定工作区的 CLI 运行环境与配置")
   .option("--json", "以 JSON 输出")
+  .option("--ping", "额外检查 LLM API 连通性")
+  .option("--cwd <path>", "指定目标工作区目录")
   .addHelpText(
     "after",
-    "\n建议先运行 `mini-claude-code init` 生成 .env，再执行 doctor。\n",
+    "\n建议先运行 `mini-claude-code init` 生成 .env，再执行 `doctor --ping`。\n",
   )
-  .action(async (options: { json?: boolean }) => {
-    await runDoctorCommand({ json: Boolean(options.json) });
+  .action(async (options: { json?: boolean; ping?: boolean; cwd?: string }) => {
+    await runDoctorCommand({
+      json: Boolean(options.json),
+      ping: Boolean(options.ping),
+      cwd: options.cwd,
+    });
   });
 
 program
@@ -217,10 +273,11 @@ program
   .argument("[query]", "按命令或原因关键字过滤")
   .option(
     "-n, --limit <number>",
-    "最多显示多少条记录",
+    "每页最多显示多少条记录",
     parsePositiveInteger,
     20,
   )
+  .option("--page <number>", "显示第几页", parsePositiveInteger, 1)
   .option("--decision <decision>", "按审批结果过滤 (approved/rejected/blocked)")
   .option("--source <source>", "按来源过滤 (tool/auto_validate/policy)")
   .option("--kind <kind>", "按类别过滤 (command/external_file/external_path)")
@@ -235,12 +292,14 @@ program
     "仅显示某个时间之前的记录，例如 2w、2026-03-25T10:00",
   )
   .option("--stats", "显示当前筛选结果的汇总统计")
+  .option("--sort <sort>", "排序方式 (newest/oldest)")
   .option("--json", "以 JSON 输出")
   .action(
     async (
       query: string | undefined,
       options: {
         limit: number;
+        page: number;
         decision?: "approved" | "rejected" | "blocked";
         source?: "tool" | "auto_validate" | "policy";
         kind?: "command" | "external_file" | "external_path";
@@ -249,30 +308,34 @@ program
         after?: string;
         before?: string;
         stats?: boolean;
+        sort?: "newest" | "oldest";
         json?: boolean;
       },
     ) => {
+      const parsed = query ? parseApprovalLogQueryText(query) : undefined;
       const filters: ApprovalLogFilters = {
-        contains: query,
-        limit: options.limit,
-        decision: options.decision,
-        source: options.source,
-        kind: options.kind,
-        action: options.action,
-        path: options.path,
-        after: options.after,
-        before: options.before,
+        contains: parsed?.filters.contains ?? query,
+        limit: parsed?.filters.limit ?? options.limit,
+        page: parsed?.filters.page ?? options.page,
+        decision: parsed?.filters.decision ?? options.decision,
+        source: parsed?.filters.source ?? options.source,
+        kind: parsed?.filters.kind ?? options.kind,
+        action: parsed?.filters.action ?? options.action,
+        path: parsed?.filters.path ?? options.path,
+        after: parsed?.filters.after ?? options.after,
+        before: parsed?.filters.before ?? options.before,
+        sort: parsed?.filters.sort ?? options.sort,
       };
       await printApprovalLog(filters, {
-        json: Boolean(options.json),
-        stats: Boolean(options.stats),
+        json: parsed?.options.json ?? Boolean(options.json),
+        stats: parsed?.options.stats ?? Boolean(options.stats),
       });
     },
   );
 
 program
   .command("benchmark")
-  .description("运行内置 benchmark 任务集")
+  .description("运行内置 benchmark 任务集（默认使用 temp_copy 隔离副本）")
   .option(
     "--task <id>",
     "仅运行指定 benchmark 任务，可重复传入",
@@ -311,8 +374,21 @@ program
   .command("sessions")
   .description("列出本地可恢复会话")
   .option("--json", "以 JSON 输出")
-  .action(async (options: { json?: boolean }) => {
-    await printSessions({ json: Boolean(options.json) });
+  .option("-n, --limit <number>", "每页最多显示多少条记录", parsePositiveInteger, 10)
+  .option("--page <number>", "显示第几页", parsePositiveInteger, 1)
+  .option("--sort <sort>", "排序方式 (updated/created/turns)")
+  .action(async (options: {
+    json?: boolean;
+    limit: number;
+    page: number;
+    sort?: "updated" | "created" | "turns";
+  }) => {
+    await printSessions({
+      json: Boolean(options.json),
+      limit: options.limit,
+      page: options.page,
+      sort: options.sort,
+    });
   });
 
 program
@@ -323,6 +399,52 @@ program
   .action(async (id: string, options: { json?: boolean }) => {
     await printSessionDetail(id, { json: Boolean(options.json) });
   });
+
+export async function runTaskCommand(
+  task: string,
+  options: { yes?: boolean; cwd?: string },
+) {
+  applyWorkspaceRoot(options.cwd);
+  logSection("用户任务");
+  logWorkspaceContext();
+  logKeyValue("目标", task);
+  if (!options.yes) {
+    logHint(
+      "需要用户确认的命令在单次执行模式下默认会被拒绝；可加 `-y` 自动放行。",
+    );
+  }
+
+  const agent = new AgentOrchestrator({
+    onConfirmCommand: async () => Boolean(options.yes),
+  });
+  const result = await agent.run(task);
+
+  logSection("执行摘要");
+  logKeyValue("步骤数", String(result.steps.length));
+  logKeyValue("变更文件数", String(result.diffs.length));
+
+  logSection("执行步骤");
+  if (result.steps.length === 0) {
+    logEmptyState("没有记录到执行步骤。");
+  } else {
+    for (const [index, step] of result.steps.entries()) {
+      logStep(index + 1, step);
+    }
+  }
+
+  logSection("变更预览");
+  if (result.diffs.length > 0) {
+    for (const d of result.diffs) {
+      logDiffHeader(d.path, d.summary);
+      for (const line of d.diff.split("\n")) logDiffLine(line);
+    }
+  } else {
+    logEmptyState("本次执行未修改文件。");
+  }
+
+  logSection("最终结果");
+  logSuccess(result.finalText);
+}
 
 configureHelp();
 
@@ -335,6 +457,7 @@ program
   .option("-y, --yes", "自动确认需要批准的命令")
   .option("-r, --resume", "恢复上次交互式会话的上下文")
   .option("--resume-session <id>", "恢复指定会话 ID 的上下文")
+  .option("--cwd <path>", "指定目标工作区目录")
   .action(
     async (
       task: string | undefined,
@@ -343,6 +466,7 @@ program
         yes?: boolean;
         resume?: boolean;
         resumeSession?: string;
+        cwd?: string;
       },
     ) => {
       if (!task || options.interactive) {
@@ -350,38 +474,13 @@ program
           autoApprove: Boolean(options.yes),
           resume: Boolean(options.resume),
           resumeSessionId: options.resumeSession,
+          cwd: options.cwd,
         });
         return;
       }
 
       try {
-        logSection("用户任务");
-        logLine(task);
-        if (!options.yes) {
-          logLine(
-            "提示: 需要用户确认的命令在单次执行模式下默认会被拒绝；可加 `-y` 自动放行。",
-          );
-        }
-
-        const agent = new AgentOrchestrator({
-          onConfirmCommand: async () => Boolean(options.yes),
-        });
-        const result = await agent.run(task);
-
-        logSection("执行步骤");
-        for (const [index, step] of result.steps.entries())
-          logStep(index + 1, step);
-
-        if (result.diffs.length > 0) {
-          logSection("变更预览");
-          for (const d of result.diffs) {
-            logDiffHeader(d.path, d.summary);
-            for (const line of d.diff.split("\n")) logDiffLine(line);
-          }
-        }
-
-        logSection("最终结果");
-        logSuccess(result.finalText);
+        await runTaskCommand(task, { yes: Boolean(options.yes), cwd: options.cwd });
       } catch (error) {
         logSection("执行失败");
         logError(error instanceof Error ? error.message : String(error));
@@ -390,4 +489,14 @@ program
     },
   );
 
-program.parseAsync(process.argv);
+export async function runCli(argv = process.argv) {
+  await program.parseAsync(argv);
+}
+
+const isEntrypoint = process.argv[1]
+  ? fileURLToPath(import.meta.url) === process.argv[1]
+  : false;
+
+if (isEntrypoint) {
+  await runCli(process.argv);
+}

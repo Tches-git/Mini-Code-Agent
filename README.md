@@ -331,6 +331,23 @@ npm pack
 npm install -g ./mini-claude-code-0.1.0.tgz
 ```
 
+安装完成后，推荐**进入目标项目目录再运行**：
+
+```bash
+mkdir my-project
+cd my-project
+mini-claude-code init
+mini-claude-code doctor --ping
+mini-claude-code -i
+```
+
+如果你当前不在目标项目目录，也可以显式指定工作区：
+
+```bash
+mini-claude-code --cwd ~/work/my-project -i
+mini-claude-code --cwd ~/work/my-project "分析当前项目结构"
+```
+
 ### 方式 3：直接从源码仓库运行
 
 ```bash
@@ -361,16 +378,25 @@ mini-claude-code doctor --ping
 
 Windows 用户如果全局命令未立即生效，先重新打开 PowerShell，或确认 npm global bin 已加入 PATH。
 
+### 工作区与用户数据
+
+- CLI 默认以**当前终端所在目录**作为工作区
+- 可通过 `--cwd <path>` 显式指定目标项目目录，避免误操作工具源码仓库
+- sessions / approvals / 运行期状态默认保存到 `~/.mini-claude-code/`，按工作区隔离
+- benchmark 运行也会遵循当前工作区；`temp_copy` 模式下会从该工作区创建隔离副本
+
 ## 常用命令
 
 ```bash
 mini-claude-code --version
 mini-claude-code --help
 mini-claude-code init
+mini-claude-code init --cwd ~/work/my-project
 mini-claude-code doctor
 mini-claude-code doctor --ping
 mini-claude-code -i
-mini-claude-code "分析当前项目结构"
+mini-claude-code --cwd ~/work/my-project -i
+mini-claude-code --cwd ~/work/my-project "分析当前项目结构"
 mini-claude-code sessions --sort turns --limit 5
 mini-claude-code session <id>
 mini-claude-code approvals --decision rejected --after 7d --page 2
@@ -507,6 +533,7 @@ npm run benchmark -- --list
 - `--isolation-mode in_place|temp_copy`
 - `--keep-isolated-workspace` 保留隔离副本便于排查
 - 汇总输出包括通过率、分类统计、skip 原因和逐任务详情
+- 在指定工作区运行时，可配合 `mini-claude-code --cwd <path> benchmark ...` 使用
 
 ```bash
 npm run benchmark -- --list

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { setWorkspaceRoot } from "../utils/runtime.js";
 
 const mockChatStream = vi.hoisted(() => vi.fn());
 
@@ -21,6 +22,7 @@ describe("runBenchmark report summary", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     mockChatStream.mockReset();
+    setWorkspaceRoot(process.cwd());
   });
 
   it(

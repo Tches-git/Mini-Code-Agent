@@ -1,15 +1,25 @@
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execa } from "execa";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
 import { normalizeFilePath } from "../utils/path.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
 const DIAGNOSTICS_TIMEOUT_MS = 60_000;
 const DIAGNOSTIC_LIMIT = 200;
 
+type PackageJson = {
+  scripts?: Record<string, string>;
+};
+
+type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
+type TypeScriptScriptName = "typecheck" | "build";
+type LintRunner = "biome" | "eslint";
+
 type DiagnosticSeverity = "error" | "warning";
-type DiagnosticSource = "tsc" | "biome";
+type DiagnosticSource = "tsc" | "biome" | "eslint";
 
 type Diagnostic = {
   file?: string;
@@ -45,12 +55,25 @@ type BiomeReporterSummary = {
   };
 };
 
+type EslintMessage = {
+  line?: number;
+  column?: number;
+  severity?: number;
+  message?: string;
+  ruleId?: string | null;
+};
+
+type EslintResult = {
+  filePath?: string;
+  messages?: EslintMessage[];
+};
+
 function normalizeDiagnosticFile(filePath?: string): string | undefined {
   if (!filePath) {
     return undefined;
   }
 
-  const relative = path.relative(process.cwd(), filePath);
+  const relative = path.relative(getWorkspaceRoot(), filePath);
   return normalizeFilePath(relative.startsWith("..") ? filePath : relative);
 }
 
@@ -129,9 +152,28 @@ function parseBiomeTextOutput(output: string): Diagnostic[] {
   return diagnostics;
 }
 
+function parseEslintJsonOutput(output: string): Diagnostic[] {
+  try {
+    const parsed = JSON.parse(output) as EslintResult[];
+    return parsed.flatMap((result) =>
+      (result.messages || []).map((message) => ({
+        file: normalizeDiagnosticFile(result.filePath),
+        line: message.line,
+        column: message.column,
+        severity: message.severity === 1 ? "warning" : "error",
+        message: message.message?.trim() || "未知 ESLint 诊断信息",
+        source: "eslint",
+        code: message.ruleId || undefined,
+      })),
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function runCommand(command: string, args: string[]): Promise<string> {
   const result = await execa(command, args, {
-    cwd: process.cwd(),
+    cwd: getWorkspaceRoot(),
     reject: false,
     timeout: DIAGNOSTICS_TIMEOUT_MS,
   });
@@ -143,39 +185,113 @@ async function runCommand(command: string, args: string[]): Promise<string> {
   return [result.stdout, result.stderr].filter(Boolean).join("\n");
 }
 
+async function readPackageJson(): Promise<PackageJson | null> {
+  try {
+    return JSON.parse(
+      await fs.readFile(path.join(getWorkspaceRoot(), "package.json"), "utf8"),
+    ) as PackageJson;
+  } catch {
+    return null;
+  }
+}
+
+async function detectPackageManager(): Promise<PackageManager> {
+  for (const check of [
+    { file: "pnpm-lock.yaml", manager: "pnpm" },
+    { file: "yarn.lock", manager: "yarn" },
+    { file: "bun.lockb", manager: "bun" },
+    { file: "bun.lock", manager: "bun" },
+    { file: "package-lock.json", manager: "npm" },
+  ] as const) {
+    try {
+      await fs.access(path.join(getWorkspaceRoot(), check.file));
+      return check.manager;
+    } catch {}
+  }
+  const userAgent = process.env.npm_config_user_agent || "";
+  if (userAgent.startsWith("pnpm")) return "pnpm";
+  if (userAgent.startsWith("yarn")) return "yarn";
+  if (userAgent.startsWith("bun")) return "bun";
+  return "npm";
+}
+
+async function getLintDiagnosticCommand(): Promise<{
+  command: string;
+  args: string[];
+  runner: LintRunner;
+}> {
+  const packageJson = await readPackageJson();
+  const lintScriptName = packageJson?.scripts?.lint?.trim()
+    ? "lint"
+    : packageJson?.scripts?.check?.trim()
+      ? "check"
+      : null;
+  const packageManager = await detectPackageManager();
+  const lintScript = lintScriptName ? packageJson?.scripts?.[lintScriptName] || "" : "";
+  const runner: LintRunner = /\beslint\b/.test(lintScript) ? "eslint" : "biome";
+  if (lintScriptName) {
+    return {
+      command: packageManager,
+      args:
+        runner === "eslint"
+          ? ["run", lintScriptName, "--", "--format", "json"]
+          : ["run", lintScriptName, "--", "--reporter", "json"],
+      runner,
+    };
+  }
+  return {
+    command: "biome",
+    args: ["check", ".", "--reporter", "json"],
+    runner: "biome",
+  };
+}
+
+async function getTypeScriptDiagnosticCommand(): Promise<{
+  command: string;
+  args: string[];
+}> {
+  const packageJson = await readPackageJson();
+  const scriptName = (["typecheck", "build"] as const).find(
+    (name) => packageJson?.scripts?.[name]?.trim(),
+  ) as TypeScriptScriptName | undefined;
+  if (scriptName) {
+    const packageManager = await detectPackageManager();
+    return {
+      command: packageManager,
+      args: ["run", scriptName],
+    };
+  }
+  return {
+    command: "tsc",
+    args: ["-p", "tsconfig.json", "--pretty", "false", "--noEmit"],
+  };
+}
+
 async function readTypeScriptDiagnostics(): Promise<DiagnosticsResult> {
-  const command = "tsc -p tsconfig.json --pretty false --noEmit";
-  const output = await runCommand("tsc", [
-    "-p",
-    "tsconfig.json",
-    "--pretty",
-    "false",
-    "--noEmit",
-  ]);
+  const diagnosticCommand = await getTypeScriptDiagnosticCommand();
+  const output = await runCommand(diagnosticCommand.command, diagnosticCommand.args);
   const parsed = limitDiagnostics(parseTscDiagnostics(output));
   return {
-    command,
+    command: [diagnosticCommand.command, ...diagnosticCommand.args].join(" "),
     diagnostics: parsed.diagnostics,
     truncated: parsed.truncated,
   };
 }
 
 async function readLintDiagnostics(): Promise<DiagnosticsResult> {
-  const command = "biome check src --reporter json";
-  const output = await runCommand("biome", [
-    "check",
-    "src",
-    "--reporter",
-    "json",
-  ]);
-  const diagnostics = parseBiomeJsonOutput(output);
+  const lintCommand = await getLintDiagnosticCommand();
+  const output = await runCommand(lintCommand.command, lintCommand.args);
+  const diagnostics =
+    lintCommand.runner === "eslint"
+      ? parseEslintJsonOutput(output)
+      : parseBiomeJsonOutput(output);
   const parsed =
     diagnostics.length > 0
       ? limitDiagnostics(diagnostics)
       : limitDiagnostics(parseBiomeTextOutput(output));
 
   return {
-    command,
+    command: [lintCommand.command, ...lintCommand.args].join(" "),
     diagnostics: parsed.diagnostics,
     truncated: parsed.truncated,
   };
@@ -216,6 +332,7 @@ export type { Diagnostic, DiagnosticsResult };
 export {
   parseBiomeJsonOutput,
   parseBiomeTextOutput,
+  parseEslintJsonOutput,
   parseTscDiagnostics,
   readLintDiagnostics,
   readTypeScriptDiagnostics,

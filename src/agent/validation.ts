@@ -5,9 +5,11 @@ import {
   readTypeScriptDiagnostics,
 } from "../tools/diagnostics.js";
 import { normalizeFilePath } from "../utils/path.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 
 const DEFAULT_VALIDATION_COMMAND = "npm run build";
 const VALIDATION_SCRIPT_ORDER = ["lint", "test", "build"] as const;
+const LINT_SCRIPT_CANDIDATES = ["lint", "check"] as const;
 const PLACEHOLDER_TEST_PATTERN = /no test specified|exit 1/i;
 const MAX_TARGETED_TEST_FILES = 6;
 const TARGETED_TEST_UNSUPPORTED_PATTERNS = [
@@ -22,6 +24,7 @@ const TARGETED_TEST_UNSUPPORTED_PATTERNS = [
 
 type PackageJson = { scripts?: Record<string, string> };
 type ValidationScriptName = (typeof VALIDATION_SCRIPT_ORDER)[number];
+type LintScriptName = (typeof LINT_SCRIPT_CANDIDATES)[number];
 
 type TestRunner = "vitest" | "jest";
 
@@ -53,7 +56,7 @@ type ValidationDiagnostics = {
     column?: number;
     severity: "error" | "warning";
     message: string;
-    source: "tsc" | "biome";
+    source: "tsc" | "biome" | "eslint";
     code?: string;
   }>;
   truncated: boolean;
@@ -106,6 +109,7 @@ export async function getDiagnosticsForValidationCommand(
   try {
     if (
       normalized.includes("lint") ||
+      normalized.includes("check") ||
       normalized.includes("biome") ||
       normalized.includes("eslint")
     ) {
@@ -267,7 +271,7 @@ async function detectPackageManager(): Promise<
     { file: "package-lock.json", manager: "npm" },
   ] as const) {
     try {
-      await fs.access(path.join(process.cwd(), check.file));
+      await fs.access(path.join(getWorkspaceRoot(), check.file));
       return check.manager;
     } catch {}
   }
@@ -318,8 +322,7 @@ function extractMatchingPaths(
 ): string[] {
   const matches = new Set<string>();
   const patterns = [
-    /(?:^|\s)(src\/[^\s:]+\.(?:test|spec)\.[^\s:]+)/gim,
-    /(?:^|\s)([^\s:]*\.(?:test|spec)\.[^\s:]+)/gim,
+    /(?:^|\s)((?:[^\s:]+\/)?[^\s:]*\.(?:test|spec)\.[^\s:]+)/gim,
   ];
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
@@ -370,19 +373,28 @@ export async function getValidationPlan(
     return { commands: [], reason: inferred.reason, steps: [] };
   try {
     const packageJson = JSON.parse(
-      await fs.readFile(path.join(process.cwd(), "package.json"), "utf8"),
+      await fs.readFile(path.join(getWorkspaceRoot(), "package.json"), "utf8"),
     ) as PackageJson;
     const scripts = packageJson.scripts || {};
     const packageManager = await detectPackageManager();
-    const available = VALIDATION_SCRIPT_ORDER.filter(
-      (name) =>
-        scripts[name] &&
-        !(name === "test" && PLACEHOLDER_TEST_PATTERN.test(scripts[name])),
+    const lintScriptName = LINT_SCRIPT_CANDIDATES.find((name) => scripts[name]) as
+      | LintScriptName
+      | undefined;
+    const available = {
+      lint: lintScriptName,
+      test:
+        scripts.test && !PLACEHOLDER_TEST_PATTERN.test(scripts.test)
+          ? "test"
+          : undefined,
+      build: scripts.build ? "build" : undefined,
+    } satisfies Partial<Record<ValidationScriptName, string | undefined>>;
+    const selected = VALIDATION_SCRIPT_ORDER.filter(
+      (name) => inferred.scripts.has(name) && available[name],
     );
-    const selected = available.filter((name) => inferred.scripts.has(name));
     if (selected.length > 0) {
       const steps: ValidationCommandStep[] = selected.map((name) => {
-        const defaultCommand = `${packageManager} run ${name}`;
+        const scriptName = available[name] as string;
+        const defaultCommand = `${packageManager} run ${scriptName}`;
         if (name !== "test") {
           return {
             kind: name,
@@ -390,9 +402,10 @@ export async function getValidationPlan(
             targeted: false,
           };
         }
+        const testScript = scripts[scriptName] as string;
         const targetedCommand = buildTargetedTestCommand(
           packageManager,
-          scripts[name],
+          testScript,
           inferred.testPaths,
         );
         return {
@@ -400,7 +413,7 @@ export async function getValidationPlan(
           command: targetedCommand || defaultCommand,
           fallbackCommand: targetedCommand ? defaultCommand : undefined,
           targeted: Boolean(targetedCommand),
-          testRunner: detectTestRunner(scripts[name]) || undefined,
+          testRunner: detectTestRunner(testScript) || undefined,
         };
       });
       const targetedTestCount = steps.filter((step) => step.targeted).length;
@@ -413,15 +426,33 @@ export async function getValidationPlan(
             : inferred.reason,
       };
     }
-    if (available.length > 0) {
-      const steps: ValidationCommandStep[] = available.map((name) => ({
-        kind: name,
-        command: `${packageManager} run ${name}`,
+    const fallbackSteps: ValidationCommandStep[] = [];
+    if (available.lint) {
+      fallbackSteps.push({
+        kind: "lint",
+        command: `${packageManager} run ${available.lint}`,
         targeted: false,
-      }));
+      });
+    }
+    if (available.test) {
+      fallbackSteps.push({
+        kind: "test",
+        command: `${packageManager} run ${available.test}`,
+        targeted: false,
+        testRunner: detectTestRunner(scripts[available.test] as string) || undefined,
+      });
+    }
+    if (available.build) {
+      fallbackSteps.push({
+        kind: "build",
+        command: `${packageManager} run ${available.build}`,
+        targeted: false,
+      });
+    }
+    if (fallbackSteps.length > 0) {
       return {
-        commands: steps.map((step) => step.command),
-        steps,
+        commands: fallbackSteps.map((step) => step.command),
+        steps: fallbackSteps,
         reason: `${inferred.reason}；未找到完全匹配的脚本，回退到项目内可用验证命令`,
       };
     }
