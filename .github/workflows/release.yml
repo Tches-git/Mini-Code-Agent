@@ -13,6 +13,8 @@ jobs:
       id-token: write
     outputs:
       package_file: ${{ steps.pack.outputs.package_file }}
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,10 +33,8 @@ jobs:
           name: npm-package
           path: ${{ steps.pack.outputs.package_file }}
       - name: Publish to npm
-        if: ${{ secrets.NPM_TOKEN != '' }}
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
         run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   standalone:
     needs: package
