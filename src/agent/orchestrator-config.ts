@@ -6,6 +6,7 @@ export const MODIFYING_TOOLS = new Set([
   "replace_range",
   "replace_text",
   "import_external_file",
+  "update_tasks",
 ]);
 
 export const MAX_AUTO_FIX_ROUNDS = 2;
@@ -40,6 +41,8 @@ export const READ_ONLY_TOOLS = new Set([
   "project_map",
   "read_command_output",
   "import_external_file",
+  "task",
+  "update_tasks",
 ]);
 export const PARALLELIZABLE_TOOLS = new Set([
   "list_files",
@@ -50,4 +53,6 @@ export const PARALLELIZABLE_TOOLS = new Set([
   "search_text",
   "project_map",
   "read_command_output",
+  "task",
+  "update_tasks",
 ]);

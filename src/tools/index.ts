@@ -4,6 +4,8 @@ import { diagnosticsTools } from "./diagnostics.js";
 import { fileTools } from "./filesystem.js";
 import { gitTools } from "./git.js";
 import { searchTools } from "./search.js";
+import { subtaskTools } from "./subtask.js";
+import { taskGraphTools } from "./task-graph.js";
 
 export const tools: ToolDefinition[] = [
   ...fileTools,
@@ -11,6 +13,8 @@ export const tools: ToolDefinition[] = [
   ...commandTools,
   ...gitTools,
   ...diagnosticsTools,
+  ...subtaskTools,
+  ...taskGraphTools,
 ];
 
 export function getToolMap() {

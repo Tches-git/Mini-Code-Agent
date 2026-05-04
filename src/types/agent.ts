@@ -51,10 +51,20 @@ export type DiffEntry = {
   diff: string;
 };
 
+export type AgentTaskStatus = "todo" | "doing" | "done" | "blocked";
+
+export type AgentTaskItem = {
+  id: number;
+  title: string;
+  status: AgentTaskStatus;
+  note?: string;
+};
+
 export type AgentRunResult = {
   finalText: string;
   steps: string[];
   diffs: DiffEntry[];
+  tasks?: AgentTaskItem[];
 };
 
 export type ToolResult = {

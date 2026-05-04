@@ -18,6 +18,8 @@ import {
 } from "./orchestrator-config.js";
 import {
   getExecutionBudget,
+  getExecutionMode,
+  getModeStrategyPrompt,
   shouldPreferProjectMap,
 } from "./orchestrator-intent.js";
 import {
@@ -33,6 +35,8 @@ import type {
 } from "./orchestrator-types.js";
 import { runAutoValidation } from "./orchestrator-validation.js";
 import { SYSTEM_PROMPT } from "./prompts.js";
+import { setActiveTaskGraph } from "./task-context.js";
+import { AgentTaskGraph } from "./task-graph.js";
 import {
   captureUndoSnapshots,
   restoreUndoSnapshots,
@@ -80,6 +84,7 @@ export class AgentOrchestrator {
   private onEvent?: (event: AgentEvent) => void;
   private approvalManager: ApprovalManager;
   private undoStack: UndoSnapshot[][] = [];
+  private taskGraph = new AgentTaskGraph();
 
   constructor(options?: {
     onEvent?: (event: AgentEvent) => void;
@@ -95,6 +100,7 @@ export class AgentOrchestrator {
 
   clearHistory() {
     this.state.clear(SYSTEM_PROMPT);
+    this.taskGraph.reset();
     clearPersistedSession().catch(() => {});
   }
 
@@ -112,6 +118,14 @@ export class AgentOrchestrator {
 
   get undoStackDepth(): number {
     return this.undoStack.length;
+  }
+
+  get taskItems() {
+    return this.taskGraph.list();
+  }
+
+  get formattedTasks() {
+    return this.taskGraph.format();
   }
 
   private rememberUndoSnapshots(snapshots: Iterable<UndoSnapshot>) {
@@ -140,6 +154,7 @@ export class AgentOrchestrator {
         finalText: "没有可撤销的上一轮文件修改。",
         steps: [],
         diffs: [],
+        tasks: this.taskGraph.list(),
       };
     }
 
@@ -149,6 +164,7 @@ export class AgentOrchestrator {
       finalText: `已撤销上一轮修改: ${restoredPaths.join(", ")}`,
       steps: ["已根据上一轮修改前快照恢复文件"],
       diffs,
+      tasks: this.taskGraph.list(),
     };
   }
 
@@ -163,6 +179,8 @@ export class AgentOrchestrator {
     };
     this.state.messages.push(planMessage);
     this.rememberMessageFocus(planMessage);
+    this.taskGraph.reset(`计划：${userTask}`);
+    setActiveTaskGraph(this.taskGraph);
     const steps: string[] = ["进入计划模式：仅允许只读探索，不执行文件修改"];
     const diffs: DiffEntry[] = [];
     const readOnlyTools = tools.filter(
@@ -188,11 +206,13 @@ export class AgentOrchestrator {
       );
 
       if (response.toolCalls.length === 0) {
+        this.taskGraph.completeActive();
         await persistSession(this.state);
         return {
           finalText: response.text || "已进入计划模式，但模型没有返回计划。",
           steps,
           diffs,
+          tasks: this.taskGraph.list(),
         };
       }
 
@@ -238,11 +258,13 @@ export class AgentOrchestrator {
       }
     }
 
+    this.taskGraph.blockActive();
     await persistSession(this.state);
     return {
       finalText: `计划模式达到最大只读探索轮数（${maxIterations} 轮），请缩小任务范围后重试。`,
       steps,
       diffs,
+      tasks: this.taskGraph.list(),
     };
   }
 
@@ -250,8 +272,18 @@ export class AgentOrchestrator {
     const userMessage: ChatMessage = { role: "user", content: userTask };
     this.state.messages.push(userMessage);
     this.rememberMessageFocus(userMessage);
+    this.taskGraph.reset(userTask);
+    setActiveTaskGraph(this.taskGraph);
     const steps: string[] = [];
     const diffs: DiffEntry[] = [];
+    const executionMode = getExecutionMode(userTask);
+    const modeHint: ChatMessage = {
+      role: "assistant",
+      content: getModeStrategyPrompt(executionMode),
+    };
+    this.state.messages.push(modeHint);
+    this.rememberMessageFocus(modeHint);
+    steps.push(`执行模式: ${executionMode}`);
     if (shouldPreferProjectMap(userTask)) {
       const projectMapHint: ChatMessage = {
         role: "assistant",
@@ -299,6 +331,9 @@ export class AgentOrchestrator {
         },
       );
 
+      for (const call of response.toolCalls) {
+        this.taskGraph.add(`调用工具 ${call.name}`, "todo");
+      }
       const toolNames = response.toolCalls.map((call) => call.name);
       const isReadOnlyExplorationTurn =
         toolNames.length > 0 &&
@@ -370,12 +405,14 @@ export class AgentOrchestrator {
             if (hasModifiedFiles) {
               this.rememberUndoSnapshots(undoSnapshots.values());
             }
+            this.taskGraph.blockActive();
             await persistSession(this.state);
             return {
               finalText:
                 "自动验证失败，且已达到最大自动修复轮数，请根据最后一次报错继续处理。",
               steps,
               diffs,
+              tasks: this.taskGraph.list(),
             };
           }
 
@@ -385,11 +422,13 @@ export class AgentOrchestrator {
         if (hasModifiedFiles) {
           this.rememberUndoSnapshots(undoSnapshots.values());
         }
+        this.taskGraph.completeActive();
         await persistSession(this.state);
         return {
           finalText: response.text || "任务完成，但模型没有返回文本。",
           steps,
           diffs,
+          tasks: this.taskGraph.list(),
         };
       }
 
@@ -519,11 +558,13 @@ export class AgentOrchestrator {
     if (hasModifiedFiles) {
       this.rememberUndoSnapshots(undoSnapshots.values());
     }
+    this.taskGraph.blockActive();
     await persistSession(this.state);
     return {
       finalText: `达到当前任务的最大执行轮数（${maxIterations} 轮，${budgetReason}），请缩小任务范围后重试。`,
       steps,
       diffs,
+      tasks: this.taskGraph.list(),
     };
   }
 }

@@ -41,6 +41,51 @@ export function shouldPreferProjectMap(userTask: string): boolean {
   );
 }
 
+export type AgentExecutionMode =
+  | "analysis"
+  | "edit"
+  | "refactor"
+  | "release"
+  | "general";
+
+export function getExecutionMode(userTask: string): AgentExecutionMode {
+  const normalized = userTask.toLowerCase();
+  if (
+    /(发布|发版|release|pack|standalone|benchmark|ci|npm publish)/i.test(
+      normalized,
+    )
+  ) {
+    return "release";
+  }
+  if (/(重构|迁移|拆分|rename|refactor|migrate)/i.test(normalized)) {
+    return "refactor";
+  }
+  const intent = analyzeTaskIntent(userTask);
+  if (intent.hasWriteIntent) {
+    return "edit";
+  }
+  if (intent.hasAnalysisIntent) {
+    return "analysis";
+  }
+  return "general";
+}
+
+export function getModeStrategyPrompt(mode: AgentExecutionMode): string {
+  if (mode === "analysis") {
+    return "当前是分析模式：优先使用 tree_files/project_map/glob_files/search_text/read_file，只读探索后给出简洁结论。";
+  }
+  if (mode === "edit") {
+    return "当前是编辑模式：优先最小改动，必要时用 update_tasks 跟踪步骤，修改后必须验证。";
+  }
+  if (mode === "refactor") {
+    return "当前是重构模式：先规划影响面，分批小改动，使用 update_tasks 跟踪迁移步骤和阻塞点。";
+  }
+  if (mode === "release") {
+    return "当前是发布模式：优先检查 git 状态、测试、构建、pack/benchmark/release 门禁，避免无关代码改动。";
+  }
+  return "当前是通用模式：按任务目标选择最小必要工具，保持步骤可追踪。";
+}
+
 export function getExecutionBudget(userTask: string): {
   limit: number;
   reason: string;

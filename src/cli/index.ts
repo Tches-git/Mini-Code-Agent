@@ -11,6 +11,7 @@ import {
   loadWorkspaceEnv,
   writeEnvTemplate,
 } from "../llm/env.js";
+import { runTaskInWorktreeSandbox } from "../release/worktree.js";
 import {
   logDiffHeader,
   logDiffLine,
@@ -473,7 +474,12 @@ program
 
 export async function runTaskCommand(
   task: string,
-  options: { yes?: boolean; cwd?: string },
+  options: {
+    yes?: boolean;
+    cwd?: string;
+    sandbox?: boolean;
+    keepSandbox?: boolean;
+  },
 ) {
   applyWorkspaceRoot(options.cwd);
   logSection("用户任务");
@@ -485,10 +491,28 @@ export async function runTaskCommand(
     );
   }
 
-  const agent = new AgentOrchestrator({
-    onConfirmCommand: async () => Boolean(options.yes),
-  });
-  const result = await agent.run(task);
+  const result = options.sandbox
+    ? await runTaskInWorktreeSandbox(task, {
+        keep: Boolean(options.keepSandbox),
+        onConfirmCommand: async () => Boolean(options.yes),
+      })
+    : await new AgentOrchestrator({
+        onConfirmCommand: async () => Boolean(options.yes),
+      }).run(task);
+
+  if (options.sandbox && "sandboxPath" in result) {
+    const sandboxResult = result as typeof result & {
+      sandboxPath: string;
+      kept: boolean;
+      sandboxDiff: string;
+      mergeHint: string;
+    };
+    logSection("Sandbox");
+    logKeyValue("Worktree", sandboxResult.sandboxPath);
+    logKeyValue("保留", sandboxResult.kept ? "是" : "否");
+    logKeyValue("Diff", sandboxResult.sandboxDiff);
+    logHint(sandboxResult.mergeHint);
+  }
 
   logSection("执行摘要");
   logKeyValue("步骤数", String(result.steps.length));
@@ -529,6 +553,8 @@ program
   .option("-r, --resume", "恢复上次交互式会话的上下文")
   .option("--resume-session <id>", "恢复指定会话 ID 的上下文")
   .option("--cwd <path>", "指定目标工作区目录")
+  .option("--sandbox", "在临时 Git worktree 中隔离执行单次任务")
+  .option("--keep-sandbox", "保留 sandbox worktree，便于检查结果")
   .action(
     async (
       task: string | undefined,
@@ -538,6 +564,8 @@ program
         resume?: boolean;
         resumeSession?: string;
         cwd?: string;
+        sandbox?: boolean;
+        keepSandbox?: boolean;
       },
     ) => {
       if (!task || options.interactive) {
@@ -554,6 +582,8 @@ program
         await runTaskCommand(task, {
           yes: Boolean(options.yes),
           cwd: options.cwd,
+          sandbox: Boolean(options.sandbox),
+          keepSandbox: Boolean(options.keepSandbox),
         });
       } catch (error) {
         logSection("执行失败");

@@ -4,7 +4,11 @@ import chalk from "chalk";
 import { execa } from "execa";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { getRuntimeEnvInfo, loadWorkspaceEnv } from "../llm/env.js";
-import type { AgentEvent, ApprovalRequest } from "../types/agent.js";
+import type {
+  AgentEvent,
+  AgentTaskItem,
+  ApprovalRequest,
+} from "../types/agent.js";
 import {
   logAssistant,
   logAutoFix,
@@ -117,17 +121,33 @@ export async function collectMultilineInput(
   }
 }
 
-export function printTaskSteps(steps: string[]) {
+export function printTaskSteps(steps: string[], tasks: AgentTaskItem[] = []) {
   logSection("任务步骤");
-  if (steps.length === 0) {
+  if (steps.length === 0 && tasks.length === 0) {
     logEmptyState("当前还没有可展示的任务步骤。");
     console.log();
     return;
   }
-  logCardList(
-    "上一轮步骤",
-    steps.map((step, index) => `**${index + 1}.** ${step}`),
-  );
+  if (tasks.length > 0) {
+    const labels: Record<AgentTaskItem["status"], string> = {
+      todo: "待办",
+      doing: "进行中",
+      done: "完成",
+      blocked: "阻塞",
+    };
+    logCardList(
+      "任务状态",
+      tasks.map(
+        (task) => `**${task.id}.** [${labels[task.status]}] ${task.title}`,
+      ),
+    );
+  }
+  if (steps.length > 0) {
+    logCardList(
+      "上一轮步骤",
+      steps.map((step, index) => `**${index + 1}.** ${step}`),
+    );
+  }
   console.log();
 }
 
@@ -484,6 +504,7 @@ export async function startInteractive(options?: {
 
   const prompt = () => chalk.cyan.bold("  > ");
   let lastTaskSteps: string[] = [];
+  let lastTaskItems: AgentTaskItem[] = [];
   let lastPlanTask: string | null = null;
   let lastPlanText: string | null = null;
 
@@ -547,6 +568,7 @@ export async function startInteractive(options?: {
       try {
         const result = await agent.plan(task);
         lastTaskSteps = result.steps;
+        lastTaskItems = result.tasks || [];
         lastPlanTask = task;
         lastPlanText = result.finalText;
         spinner.stop();
@@ -577,6 +599,7 @@ export async function startInteractive(options?: {
         }
         const result = await agent.run(task);
         lastTaskSteps = result.steps;
+        lastTaskItems = result.tasks || [];
         spinner.stop();
         logCard("执行完成");
         if (result.diffs.length > 0) {
@@ -629,13 +652,14 @@ export async function startInteractive(options?: {
       continue;
     }
     if (slashCommand === "/tasks") {
-      printTaskSteps(lastTaskSteps);
+      printTaskSteps(lastTaskSteps, lastTaskItems);
       continue;
     }
     if (slashCommand === "/undo") {
       try {
         const result = await agent.undoLastRun();
         lastTaskSteps = result.steps;
+        lastTaskItems = result.tasks || [];
         logCard("撤销完成");
         if (result.diffs.length > 0) {
           logSection("撤销预览");
@@ -705,6 +729,7 @@ export async function startInteractive(options?: {
     try {
       const result = await agent.run(trimmed);
       lastTaskSteps = result.steps;
+      lastTaskItems = result.tasks || [];
       spinner.stop();
       logCard("执行完成");
       if (result.diffs.length > 0) {
