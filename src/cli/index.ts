@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { execa } from "execa";
-import { fileURLToPath } from "node:url";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { LlmClient } from "../llm/client.js";
-import { getRuntimeEnvInfo, loadWorkspaceEnv, writeEnvTemplate } from "../llm/env.js";
+import {
+  getRuntimeEnvInfo,
+  loadWorkspaceEnv,
+  writeEnvTemplate,
+} from "../llm/env.js";
 import {
   logDiffHeader,
   logDiffLine,
@@ -19,8 +23,16 @@ import {
   logStep,
   logSuccess,
 } from "../utils/logger.js";
-import { getAppDataDir, getWorkspaceRoot, setWorkspaceRoot } from "../utils/runtime.js";
-import { parseApprovalLogQueryText, type ApprovalLogFilters, printApprovalLog } from "./approval-log.js";
+import {
+  getAppDataDir,
+  getWorkspaceRoot,
+  setWorkspaceRoot,
+} from "../utils/runtime.js";
+import {
+  type ApprovalLogFilters,
+  parseApprovalLogQueryText,
+  printApprovalLog,
+} from "./approval-log.js";
 import { runBenchmarkCommand } from "./benchmark.js";
 import { startInteractive } from "./interactive.js";
 import { runReleaseStandaloneCommand } from "./release.js";
@@ -34,7 +46,9 @@ function getCliVersion(): string {
     return injectedVersion;
   }
 
-  const packageJsonPath = fileURLToPath(new URL("../../package.json", import.meta.url));
+  const packageJsonPath = fileURLToPath(
+    new URL("../../package.json", import.meta.url),
+  );
   try {
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
       version?: string;
@@ -55,7 +69,10 @@ function shouldRunAsEntrypoint(): boolean {
   }
 
   try {
-    return path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+    return (
+      path.resolve(fileURLToPath(import.meta.url)) ===
+      path.resolve(process.argv[1])
+    );
   } catch {
     return false;
   }
@@ -105,10 +122,16 @@ function logWorkspaceContext() {
   logKeyValue("用户数据目录", getAppDataDir());
 }
 
-export async function runInitCommand(options: { force?: boolean; cwd?: string }) {
+export async function runInitCommand(options: {
+  force?: boolean;
+  cwd?: string;
+}) {
   applyWorkspaceRoot(options.cwd);
   try {
-    const result = await writeEnvTemplate({ cwd: getWorkspaceRoot(), force: Boolean(options.force) });
+    const result = await writeEnvTemplate({
+      cwd: getWorkspaceRoot(),
+      force: Boolean(options.force),
+    });
     logSection("初始化完成");
     logWorkspaceContext();
     logKeyValue("结果", result.overwritten ? "已覆盖" : "已创建");
@@ -132,7 +155,11 @@ export async function runInitCommand(options: { force?: boolean; cwd?: string })
   }
 }
 
-export async function runDoctorCommand(options: { json?: boolean; ping?: boolean; cwd?: string }) {
+export async function runDoctorCommand(options: {
+  json?: boolean;
+  ping?: boolean;
+  cwd?: string;
+}) {
   applyWorkspaceRoot(options.cwd);
   const runtime = getRuntimeEnvInfo();
   const checks: Array<{
@@ -169,9 +196,7 @@ export async function runDoctorCommand(options: { json?: boolean; ping?: boolean
     {
       name: "OPENAI_API_KEY",
       ok: runtime.openaiApiKeyConfigured,
-      detail: runtime.openaiApiKeyConfigured
-        ? "已配置"
-        : "未配置（必填）",
+      detail: runtime.openaiApiKeyConfigured ? "已配置" : "未配置（必填）",
       required: true,
     },
     {
@@ -254,7 +279,9 @@ export async function runDoctorCommand(options: { json?: boolean; ping?: boolean
     }
   }
   if (!runtime.openaiApiKeyConfigured) {
-    logHint("可先运行 `mini-claude-code init` 生成 .env，再填写 OPENAI_API_KEY。");
+    logHint(
+      "可先运行 `mini-claude-code init` 生成 .env，再填写 OPENAI_API_KEY。",
+    );
   }
   if (!allRequiredChecksPassed) {
     process.exitCode = 1;
@@ -411,22 +438,29 @@ program
   .command("sessions")
   .description("列出本地可恢复会话")
   .option("--json", "以 JSON 输出")
-  .option("-n, --limit <number>", "每页最多显示多少条记录", parsePositiveInteger, 10)
+  .option(
+    "-n, --limit <number>",
+    "每页最多显示多少条记录",
+    parsePositiveInteger,
+    10,
+  )
   .option("--page <number>", "显示第几页", parsePositiveInteger, 1)
   .option("--sort <sort>", "排序方式 (updated/created/turns)")
-  .action(async (options: {
-    json?: boolean;
-    limit: number;
-    page: number;
-    sort?: "updated" | "created" | "turns";
-  }) => {
-    await printSessions({
-      json: Boolean(options.json),
-      limit: options.limit,
-      page: options.page,
-      sort: options.sort,
-    });
-  });
+  .action(
+    async (options: {
+      json?: boolean;
+      limit: number;
+      page: number;
+      sort?: "updated" | "created" | "turns";
+    }) => {
+      await printSessions({
+        json: Boolean(options.json),
+        limit: options.limit,
+        page: options.page,
+        sort: options.sort,
+      });
+    },
+  );
 
 program
   .command("session")
@@ -517,7 +551,10 @@ program
       }
 
       try {
-        await runTaskCommand(task, { yes: Boolean(options.yes), cwd: options.cwd });
+        await runTaskCommand(task, {
+          yes: Boolean(options.yes),
+          cwd: options.cwd,
+        });
       } catch (error) {
         logSection("执行失败");
         logError(error instanceof Error ? error.message : String(error));

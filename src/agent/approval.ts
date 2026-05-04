@@ -12,11 +12,15 @@ const EXTERNAL_PATH_TOOL_ACTIONS: Partial<
   Record<string, ExternalPathConfirmationRequest["action"]>
 > = {
   list_files: "list",
+  tree_files: "list",
   read_file: "read",
+  inspect_file: "read",
+  glob_files: "list",
   create_file: "write",
   write_file: "write",
   append_text: "write",
   insert_after: "write",
+  replace_range: "write",
   replace_text: "write",
   search_text: "search",
   project_map: "read",

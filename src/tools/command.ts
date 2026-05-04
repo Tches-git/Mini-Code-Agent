@@ -5,6 +5,10 @@ import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
 import { appendCommandAudit } from "../utils/command-audit.js";
 import { isPathOutsideWorkspace } from "../utils/path.js";
+import {
+  getProjectToolingConfig,
+  readWorkspacePackageJson,
+} from "../utils/project-tooling.js";
 import { getWorkspaceRoot } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
@@ -78,21 +82,21 @@ const GUARDED_GIT_SUBCOMMANDS = new Set([
   "switch",
   "tag",
 ]);
-const SAFE_PACKAGE_MANAGER_SCRIPTS = new Set([
+const DEFAULT_SAFE_PACKAGE_MANAGER_SCRIPTS = [
   "build",
   "check",
   "lint",
   "test",
   "typecheck",
-]);
-const GUARDED_PACKAGE_MANAGER_SCRIPTS = new Set([
+];
+const DEFAULT_GUARDED_PACKAGE_MANAGER_SCRIPTS = [
   "chat",
   "dev",
   "install",
   "migrate",
   "seed",
   "start",
-]);
+];
 const GUARDED_PACKAGE_MANAGER_SUBCOMMANDS = new Set([
   "add",
   "ci",
@@ -160,12 +164,35 @@ const BLOCKED_PATTERNS: RegExp[] = [
 
 const MAX_COMMAND_LENGTH = 2000;
 const COMMAND_TIMEOUT_MS = 60_000;
+const DEFAULT_COMMAND_OUTPUT_LINE_LIMIT = 2000;
+const MAX_COMMAND_OUTPUT_LINE_LIMIT = 5000;
 
 export type CommandPolicy = {
   decision: "allow" | "confirm" | "block";
   reason: string;
   executable: string;
 };
+
+type CommandOutputPage = {
+  text: string;
+  totalLines: number;
+  startLine: number;
+  endLine: number;
+  truncated: boolean;
+  nextOffset?: number;
+};
+
+type CommandOutputSnapshot = {
+  command: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  createdAt: string;
+  timedOut?: boolean;
+  failureReason?: string;
+};
+
+let lastCommandOutputSnapshot: CommandOutputSnapshot | null = null;
 
 function parseConfiguredRules(envName: string): string[] {
   const raw = process.env[envName];
@@ -295,19 +322,6 @@ function isDangerous(command: string): string | null {
   return null;
 }
 
-async function readPackageScripts(): Promise<Record<string, string>> {
-  try {
-    const packageJson = JSON.parse(
-      await fs.readFile(path.join(getWorkspaceRoot(), "package.json"), "utf8"),
-    ) as {
-      scripts?: Record<string, string>;
-    };
-    return packageJson.scripts || {};
-  } catch {
-    return {};
-  }
-}
-
 async function resolveLocalToolchainCommand(executable: string): Promise<
   | {
       file: string;
@@ -315,7 +329,12 @@ async function resolveLocalToolchainCommand(executable: string): Promise<
     }
   | undefined
 > {
-  const localBinPath = path.join(getWorkspaceRoot(), "node_modules", ".bin", executable);
+  const localBinPath = path.join(
+    getWorkspaceRoot(),
+    "node_modules",
+    ".bin",
+    executable,
+  );
 
   try {
     await fs.access(localBinPath);
@@ -584,11 +603,139 @@ function hasForwardedMutatingFlags(args: string[]): boolean {
   return args.some((arg) => FORWARDED_MUTATING_FLAGS.has(arg.toLowerCase()));
 }
 
+function normalizeCommandOutputOffset(offset?: number): number {
+  return Number.isFinite(offset) ? Math.max(0, offset || 0) : 0;
+}
+
+function normalizeCommandOutputLimit(limit?: number): number {
+  return Number.isFinite(limit)
+    ? Math.max(
+        1,
+        Math.min(
+          MAX_COMMAND_OUTPUT_LINE_LIMIT,
+          limit || DEFAULT_COMMAND_OUTPUT_LINE_LIMIT,
+        ),
+      )
+    : DEFAULT_COMMAND_OUTPUT_LINE_LIMIT;
+}
+
+function paginateCommandOutput(
+  text: string,
+  offset?: number,
+  limit?: number,
+): CommandOutputPage {
+  const normalizedOffset = normalizeCommandOutputOffset(offset);
+  const normalizedLimit = normalizeCommandOutputLimit(limit);
+  const lines = text ? text.split("\n") : [];
+  const selected = lines.slice(
+    normalizedOffset,
+    normalizedOffset + normalizedLimit,
+  );
+  const endLine = normalizedOffset + selected.length;
+  const truncated = endLine < lines.length;
+
+  return {
+    text: selected.join("\n"),
+    totalLines: lines.length,
+    startLine: selected.length > 0 ? normalizedOffset + 1 : 0,
+    endLine,
+    truncated,
+    nextOffset: truncated ? endLine : undefined,
+  };
+}
+
+function getCommandErrorSummary(
+  exitCode: number | null | undefined,
+  stderr: string,
+  stdout: string,
+): string | undefined {
+  if (!exitCode) return undefined;
+  const combined = `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+  const interesting = combined.filter((line) =>
+    /error|failed|failure|exception|not found|cannot|denied|traceback|syntax/i.test(
+      line,
+    ),
+  );
+  return (
+    (interesting.length > 0 ? interesting : combined).slice(0, 12).join("\n") ||
+    undefined
+  );
+}
+
+function getPreferredOutputStream(
+  exitCode: number | null | undefined,
+  stdout: string,
+  stderr: string,
+): "stdout" | "stderr" {
+  return exitCode && stderr.trim()
+    ? "stderr"
+    : stdout.trim()
+      ? "stdout"
+      : "stderr";
+}
+
+function isCommandTimeoutResult(result: {
+  timedOut?: boolean;
+  signal?: string | null;
+  stderr?: string;
+}): boolean {
+  return Boolean(
+    result.timedOut ||
+      result.signal === "SIGTERM" ||
+      /timed? out|timeout/i.test(result.stderr || ""),
+  );
+}
+
+function getLastCommandOutputPage(options: {
+  stream?: "stdout" | "stderr";
+  outputOffset?: number;
+  outputLimit?: number;
+}) {
+  if (!lastCommandOutputSnapshot) {
+    throw new Error("没有可读取的上一次命令输出，请先运行 run_command");
+  }
+  const stream = options.stream || "stdout";
+  const page = paginateCommandOutput(
+    stream === "stderr"
+      ? lastCommandOutputSnapshot.stderr
+      : lastCommandOutputSnapshot.stdout,
+    options.outputOffset,
+    options.outputLimit,
+  );
+  return JSON.stringify(
+    {
+      command: lastCommandOutputSnapshot.command,
+      exitCode: lastCommandOutputSnapshot.exitCode,
+      createdAt: lastCommandOutputSnapshot.createdAt,
+      stream,
+      output: page.text,
+      page,
+      timedOut: lastCommandOutputSnapshot.timedOut,
+      failureReason: lastCommandOutputSnapshot.failureReason,
+    },
+    null,
+    2,
+  );
+}
+
 async function assessPackageManagerCommand(
   executable: string,
   args: string[],
 ): Promise<CommandPolicy> {
-  const scripts = await readPackageScripts();
+  const packageJson = await readWorkspacePackageJson();
+  const scripts = packageJson?.scripts || {};
+  const tooling = getProjectToolingConfig(packageJson);
+  const safeScripts = new Set([
+    ...DEFAULT_SAFE_PACKAGE_MANAGER_SCRIPTS,
+    ...tooling.commandPolicy.safeScripts,
+  ]);
+  const guardedScripts = new Set([
+    ...DEFAULT_GUARDED_PACKAGE_MANAGER_SCRIPTS,
+    ...tooling.commandPolicy.guardedScripts,
+  ]);
   const subcommand = args[0]?.toLowerCase();
 
   if (!subcommand) {
@@ -660,7 +807,7 @@ async function assessPackageManagerCommand(
         executable,
       };
     }
-    if (SAFE_PACKAGE_MANAGER_SCRIPTS.has(scriptName)) {
+    if (safeScripts.has(scriptName)) {
       if (hasForwardedMutatingFlags(args.slice(2))) {
         return {
           decision: "confirm",
@@ -675,7 +822,7 @@ async function assessPackageManagerCommand(
         scripts,
       );
     }
-    if (GUARDED_PACKAGE_MANAGER_SCRIPTS.has(scriptName)) {
+    if (guardedScripts.has(scriptName)) {
       return {
         decision: "confirm",
         reason: `${executable} run ${scriptName} 可能启动服务或改动环境，需要用户确认`,
@@ -813,18 +960,78 @@ export async function getRunCommandPolicy(
   };
 }
 
+export {
+  getCommandErrorSummary,
+  getLastCommandOutputPage,
+  getPreferredOutputStream,
+  isCommandTimeoutResult,
+  paginateCommandOutput,
+};
+
 export const commandTools: ToolDefinition[] = [
+  createTool({
+    name: "read_command_output",
+    description:
+      "读取上一次 run_command 的 stdout 或 stderr 后续分页，不重新执行命令",
+    schema: z.object({
+      stream: z.enum(["stdout", "stderr"]).optional(),
+      outputOffset: z.number().int().min(0).optional(),
+      outputLimit: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_COMMAND_OUTPUT_LINE_LIMIT)
+        .optional(),
+    }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        stream: {
+          type: "string",
+          enum: ["stdout", "stderr"],
+          description: "可选，要读取 stdout 还是 stderr，默认 stdout",
+        },
+        outputOffset: {
+          type: "number",
+          description: "可选，从第几行开始返回（0-based）",
+        },
+        outputLimit: {
+          type: "number",
+          description: `可选，最多返回多少行，范围 1-${MAX_COMMAND_OUTPUT_LINE_LIMIT}，默认 ${DEFAULT_COMMAND_OUTPUT_LINE_LIMIT}`,
+        },
+      },
+    },
+    async execute(input) {
+      return getLastCommandOutputPage(input);
+    },
+  }),
   createTool({
     name: "run_command",
     description: "运行工作区内的命令，例如 npm run build",
     schema: z.object({
       command: z.string().min(1, "命令不能为空"),
+      outputOffset: z.number().int().min(0).optional(),
+      outputLimit: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_COMMAND_OUTPUT_LINE_LIMIT)
+        .optional(),
       confirmed: z.boolean().optional(),
     }),
     inputSchema: {
       type: "object",
       properties: {
         command: { type: "string" },
+        outputOffset: {
+          type: "number",
+          description:
+            "可选，从 stdout/stderr 第几行开始返回（0-based），默认 0",
+        },
+        outputLimit: {
+          type: "number",
+          description: `可选，stdout/stderr 最多各返回多少行，范围 1-${MAX_COMMAND_OUTPUT_LINE_LIMIT}，默认 ${DEFAULT_COMMAND_OUTPUT_LINE_LIMIT}`,
+        },
         confirmed: {
           type: "boolean",
           description: "仅当用户已明确确认后才传 true",
@@ -876,12 +1083,57 @@ export const commandTools: ToolDefinition[] = [
       if (result.failed && result.code === "ENOENT") {
         throw new Error(`命令不存在或不可执行: ${file}`);
       }
+      const timedOut = isCommandTimeoutResult(result);
+      const failureReason = timedOut
+        ? `命令超时（${COMMAND_TIMEOUT_MS}ms），已返回已捕获的部分输出。`
+        : undefined;
+      lastCommandOutputSnapshot = {
+        command: input.command,
+        exitCode: result.exitCode ?? null,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        createdAt: new Date().toISOString(),
+        timedOut,
+        failureReason,
+      };
+      const stdoutPage = paginateCommandOutput(
+        result.stdout,
+        input.outputOffset,
+        input.outputLimit,
+      );
+      const stderrPage = paginateCommandOutput(
+        result.stderr,
+        input.outputOffset,
+        input.outputLimit,
+      );
+      const errorSummary = getCommandErrorSummary(
+        result.exitCode,
+        result.stderr,
+        result.stdout,
+      );
+      const preferredStream = getPreferredOutputStream(
+        result.exitCode,
+        result.stdout,
+        result.stderr,
+      );
       return JSON.stringify(
         {
           command: input.command,
           exitCode: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
+          stdout: stdoutPage.text,
+          stderr: stderrPage.text,
+          preferredStream,
+          preferredOutput:
+            preferredStream === "stderr" ? stderrPage.text : stdoutPage.text,
+          stdoutPage,
+          stderrPage,
+          errorSummary,
+          timedOut,
+          failureReason,
+          nextPageHint:
+            stdoutPage.truncated || stderrPage.truncated
+              ? "使用 read_command_output 读取上一次命令输出的后续页，无需重跑命令。"
+              : undefined,
         },
         null,
         2,

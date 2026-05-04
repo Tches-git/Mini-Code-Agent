@@ -1,6 +1,18 @@
 import chalk from "chalk";
 
-export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+export const SPINNER_FRAMES = [
+  "⠋",
+  "⠙",
+  "⠹",
+  "⠸",
+  "⠼",
+  "⠴",
+  "⠦",
+  "⠧",
+  "⠇",
+  "⠏",
+];
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape matching intentionally uses ESC.
 const ANSI_ESCAPE_PATTERN = /\u001B\[[0-9;]*m/g;
 const DEFAULT_TERMINAL_WIDTH = 100;
 
@@ -84,19 +96,28 @@ export function wrapTextLines(text: string, width: number): string[] {
 }
 
 export function stripLeadingIndent(text: string, indent: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape matching intentionally uses ESC.
   const prefixMatch = /^((?:\u001B\[[0-9;]*m)*)/.exec(text);
   const prefix = prefixMatch?.[1] || "";
   const rest = text.slice(prefix.length);
-  return rest.startsWith(indent) ? `${prefix}${rest.slice(indent.length)}` : text;
+  return rest.startsWith(indent)
+    ? `${prefix}${rest.slice(indent.length)}`
+    : text;
 }
 
 export function formatInlineMarkdown(text: string): string {
   return text
     .replace(/`([^`]+)`/g, (_, value: string) => chalk.yellow(value))
     .replace(/\*\*([^*]+)\*\*/g, (_, value: string) => chalk.bold(value))
-    .replace(/(^|[^\w])__([^_]+)__(?=[^\w]|$)/g, (_, prefix: string, value: string) => `${prefix}${chalk.bold(value)}`)
+    .replace(
+      /(^|[^\w])__([^_]+)__(?=[^\w]|$)/g,
+      (_, prefix: string, value: string) => `${prefix}${chalk.bold(value)}`,
+    )
     .replace(/\*([^*]+)\*/g, (_, value: string) => chalk.italic(value))
-    .replace(/(^|[^\w])_([^_]+)_(?=[^\w]|$)/g, (_, prefix: string, value: string) => `${prefix}${chalk.italic(value)}`);
+    .replace(
+      /(^|[^\w])_([^_]+)_(?=[^\w]|$)/g,
+      (_, prefix: string, value: string) => `${prefix}${chalk.italic(value)}`,
+    );
 }
 
 export function formatInlineText(text: string): string {
@@ -110,7 +131,10 @@ export function truncatePlainText(text: string, width: number): string {
   return `${text.slice(0, Math.max(1, width - 1))}…`;
 }
 
-export function renderStatusTag(status: string, color: "green" | "red" | "yellow" | "blue") {
+export function renderStatusTag(
+  status: string,
+  color: "green" | "red" | "yellow" | "blue",
+) {
   const painter =
     color === "green"
       ? chalk.green

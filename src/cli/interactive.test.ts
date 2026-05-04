@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockExeca = vi.hoisted(() => vi.fn());
 const mockLoadWorkspaceEnv = vi.hoisted(() => vi.fn());
+const mockGetRuntimeEnvInfo = vi.hoisted(() => vi.fn());
 const mockQuestion = vi.hoisted(() => vi.fn());
 const mockClose = vi.hoisted(() => vi.fn());
 const mockListSessions = vi.hoisted(() => vi.fn());
 const mockRestoreSession = vi.hoisted(() => vi.fn());
 const mockRun = vi.hoisted(() => vi.fn());
+const mockPlan = vi.hoisted(() => vi.fn());
+const mockUndoLastRun = vi.hoisted(() => vi.fn());
 const mockClearHistory = vi.hoisted(() => vi.fn());
 const mockLogAssistant = vi.hoisted(() => vi.fn());
 const mockLogBanner = vi.hoisted(() => vi.fn());
@@ -22,7 +26,15 @@ const mockSpinnerStart = vi.hoisted(() => vi.fn());
 const mockSpinnerStop = vi.hoisted(() => vi.fn());
 const mockSetWorkspaceRoot = vi.hoisted(() => vi.fn());
 const mockGetWorkspaceRoot = vi.hoisted(() => vi.fn(() => "/tmp/workspace"));
-const mockGetAppDataDir = vi.hoisted(() => vi.fn(() => "/tmp/home/.mini-claude-code"));
+const mockGetAppDataDir = vi.hoisted(() =>
+  vi.fn(() => "/tmp/home/.mini-claude-code"),
+);
+const mockReadWorkspacePackageJson = vi.hoisted(() => vi.fn());
+const mockDetectPackageManager = vi.hoisted(() => vi.fn());
+
+vi.mock("execa", () => ({
+  execa: mockExeca,
+}));
 
 vi.mock("node:readline/promises", () => ({
   createInterface: vi.fn(() => ({
@@ -43,13 +55,29 @@ vi.mock("../agent/session.js", () => ({
 
 vi.mock("../llm/env.js", () => ({
   loadWorkspaceEnv: mockLoadWorkspaceEnv,
+  getRuntimeEnvInfo: mockGetRuntimeEnvInfo,
 }));
+
+vi.mock("../utils/project-tooling.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../utils/project-tooling.js")
+  >("../utils/project-tooling.js");
+  return {
+    ...actual,
+    readWorkspacePackageJson: mockReadWorkspacePackageJson,
+    detectPackageManager: mockDetectPackageManager,
+  };
+});
 
 vi.mock("../agent/orchestrator.js", () => ({
   AgentOrchestrator: class {
     turnCount = 3;
+    canUndoLastRun = false;
+    undoStackDepth = 0;
     restoreSession = mockRestoreSession;
     run = mockRun;
+    plan = mockPlan;
+    undoLastRun = mockUndoLastRun;
     clearHistory = mockClearHistory;
   },
 }));
@@ -90,7 +118,17 @@ vi.mock("../utils/logger.js", () => ({
   },
 }));
 
-import { describeApprovalRequest, startInteractive } from "./interactive.js";
+import {
+  collectMultilineInput,
+  describeApprovalRequest,
+  getWorkspaceDiffSummary,
+  parseDiffCommandArgs,
+  printInteractiveConfig,
+  printInteractiveStatus,
+  printTaskSteps,
+  printWorkspaceDiff,
+  startInteractive,
+} from "./interactive.js";
 
 describe("startInteractive", () => {
   it("shows workspace and app data hints on startup", async () => {
@@ -100,17 +138,24 @@ describe("startInteractive", () => {
 
     expect(mockSetWorkspaceRoot).toHaveBeenCalledWith("/tmp/demo");
     expect(mockLoadWorkspaceEnv).toHaveBeenCalledWith("/tmp/demo");
-    expect(mockLogHint).toHaveBeenCalledWith(expect.stringContaining("当前工作区"));
-    expect(mockLogHint).toHaveBeenCalledWith(expect.stringContaining("用户数据目录"));
+    expect(mockLogHint).toHaveBeenCalledWith(
+      expect.stringContaining("当前工作区"),
+    );
+    expect(mockLogHint).toHaveBeenCalledWith(
+      expect.stringContaining("用户数据目录"),
+    );
   });
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    mockExeca.mockReset();
     mockQuestion.mockReset();
     mockClose.mockReset();
     mockListSessions.mockReset().mockResolvedValue([]);
     mockRestoreSession.mockReset().mockResolvedValue(false);
     mockRun.mockReset();
+    mockPlan.mockReset();
+    mockUndoLastRun.mockReset();
     mockClearHistory.mockReset();
     mockLogAssistant.mockReset();
     mockLogBanner.mockReset();
@@ -126,11 +171,46 @@ describe("startInteractive", () => {
     mockSpinnerStart.mockReset();
     mockSpinnerStop.mockReset();
     mockLoadWorkspaceEnv.mockReset();
+    mockGetRuntimeEnvInfo.mockReset().mockReturnValue({
+      envFilePath: "/tmp/workspace/.env",
+      hasEnvFile: true,
+      openaiApiKeyConfigured: true,
+      openaiBaseUrl: "https://api.openai.com/v1",
+      modelName: "gpt-5.4",
+    });
+    mockReadWorkspacePackageJson.mockReset().mockResolvedValue(null);
+    mockDetectPackageManager.mockReset().mockResolvedValue("npm");
     mockSetWorkspaceRoot.mockReset();
     mockGetWorkspaceRoot.mockReset().mockReturnValue("/tmp/workspace");
-    mockGetAppDataDir.mockReset().mockReturnValue("/tmp/home/.mini-claude-code");
+    mockGetAppDataDir
+      .mockReset()
+      .mockReturnValue("/tmp/home/.mini-claude-code");
     vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  it("collectMultilineInput reads fenced multiline input", async () => {
+    const rl = {
+      question: vi
+        .fn()
+        .mockResolvedValueOnce("第一行")
+        .mockResolvedValueOnce("第二行")
+        .mockResolvedValueOnce("```"),
+    } as never;
+
+    const result = await collectMultilineInput(rl, "```", () => "> ");
+
+    expect(result).toBe("第一行\n第二行");
+  });
+
+  it("collectMultilineInput joins backslash-continued input", async () => {
+    const rl = {
+      question: vi.fn().mockResolvedValueOnce("第二行"),
+    } as never;
+
+    const result = await collectMultilineInput(rl, "第一行\\", () => "> ");
+
+    expect(result).toBe("第一行\n第二行");
   });
 
   it("/sessions prints recent sessions", async () => {
@@ -146,16 +226,16 @@ describe("startInteractive", () => {
       },
     ]);
     mockQuestion
-      .mockResolvedValueOnce("/sessions")
+      .mockResolvedValueOnce("/sessions 修复")
       .mockRejectedValueOnce(new Error("stop"));
 
     await startInteractive();
 
     expect(mockListSessions).toHaveBeenCalledTimes(1);
+    expect(mockLogSection).toHaveBeenCalledWith("会话列表");
     expect(mockLogCardList).toHaveBeenCalledWith(
-      "可恢复会话",
+      "会话项",
       expect.arrayContaining([expect.stringContaining("session-1")]),
-      { emptyText: "当前没有可恢复的会话。" },
     );
   });
 
@@ -182,6 +262,288 @@ describe("startInteractive", () => {
     expect(mockRestoreSession).toHaveBeenCalledWith("saved-1");
     expect(mockLogSuccess).toHaveBeenCalledWith(
       expect.stringContaining("已恢复会话 saved-1"),
+    );
+  });
+
+  it("/plan runs plan mode without normal execution", async () => {
+    mockPlan.mockResolvedValue({
+      diffs: [],
+      finalText: "执行计划：先读文件，再验证。",
+      steps: [],
+    });
+    mockQuestion
+      .mockResolvedValueOnce("/plan 修复登录问题")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockPlan).toHaveBeenCalledWith("修复登录问题");
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(mockLogCard).toHaveBeenCalledWith("计划完成");
+    expect(mockLogAssistant).toHaveBeenCalledWith(
+      "执行计划：先读文件，再验证。",
+    );
+  });
+
+  it("/plan without task shows usage", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/plan")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockPlan).not.toHaveBeenCalled();
+    expect(mockLogError).toHaveBeenCalledWith("用法: /plan <task>");
+  });
+
+  it("/execute runs the last planned task", async () => {
+    mockPlan.mockResolvedValue({
+      diffs: [],
+      finalText: "计划：修改并验证。",
+      steps: ["计划步骤"],
+    });
+    mockRun.mockResolvedValue({
+      diffs: [],
+      finalText: "执行完成。",
+      steps: ["执行步骤"],
+    });
+    mockQuestion
+      .mockResolvedValueOnce("/plan 修复问题")
+      .mockResolvedValueOnce("/execute")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockPlan).toHaveBeenCalledWith("修复问题");
+    expect(mockRun).toHaveBeenCalledWith("修复问题");
+    expect(mockLogCard).toHaveBeenCalledWith("执行最近计划");
+    expect(mockLogAssistant).toHaveBeenCalledWith("执行完成。");
+  });
+
+  it("/execute without plan shows guidance", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/execute")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockRun).not.toHaveBeenCalled();
+    expect(mockLogError).toHaveBeenCalledWith(
+      "没有可执行的计划，请先运行 /plan <task>，或使用 /execute <task>",
+    );
+  });
+
+  it("/execute with explicit task runs that task", async () => {
+    mockRun.mockResolvedValue({
+      diffs: [],
+      finalText: "显式执行完成。",
+      steps: [],
+    });
+    mockQuestion
+      .mockResolvedValueOnce("/execute 修复构建")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockRun).toHaveBeenCalledWith("修复构建");
+    expect(mockLogAssistant).toHaveBeenCalledWith("显式执行完成。");
+  });
+
+  it("parseDiffCommandArgs parses staged and path", () => {
+    expect(parseDiffCommandArgs("/diff --staged src/a.ts")).toEqual({
+      staged: true,
+      path: "src/a.ts",
+    });
+    expect(parseDiffCommandArgs("/diff src/a.ts")).toEqual({
+      staged: false,
+      path: "src/a.ts",
+    });
+  });
+
+  it("/diff prints current git diff", async () => {
+    mockExeca.mockResolvedValue({
+      exitCode: 0,
+      stdout: "diff --git a/src/a.ts b/src/a.ts\n+changed",
+      stderr: "",
+    });
+    mockQuestion
+      .mockResolvedValueOnce("/diff")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockExeca).toHaveBeenCalledWith("git", ["diff", "--", "."], {
+      cwd: "/tmp/workspace",
+      reject: false,
+    });
+    expect(mockLogSection).toHaveBeenCalledWith("当前工作区 Diff");
+  });
+
+  it("printWorkspaceDiff shows empty state when there is no diff", async () => {
+    mockExeca.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+
+    await printWorkspaceDiff();
+
+    expect(mockLogEmptyState).toHaveBeenCalledWith("当前没有未暂存差异。");
+  });
+
+  it("printWorkspaceDiff supports staged path diff", async () => {
+    mockExeca.mockResolvedValue({
+      exitCode: 0,
+      stdout: "diff --git a/src/a.ts b/src/a.ts\n+staged",
+      stderr: "",
+    });
+
+    await printWorkspaceDiff({ staged: true, path: "src/a.ts" });
+
+    expect(mockExeca).toHaveBeenCalledWith(
+      "git",
+      ["diff", "--staged", "--", "src/a.ts"],
+      {
+        cwd: "/tmp/workspace",
+        reject: false,
+      },
+    );
+    expect(mockLogSection).toHaveBeenCalledWith("当前暂存区 Diff");
+  });
+
+  it("getWorkspaceDiffSummary reports changed file count", async () => {
+    mockExeca.mockResolvedValue({
+      exitCode: 0,
+      stdout: " M src/a.ts\n?? src/b.ts",
+      stderr: "",
+    });
+
+    await expect(getWorkspaceDiffSummary()).resolves.toBe("2 个变更文件");
+  });
+
+  it("printInteractiveStatus shows workspace session and git status", async () => {
+    mockExeca.mockResolvedValue({
+      exitCode: 0,
+      stdout: " M src/a.ts",
+      stderr: "",
+    });
+
+    await printInteractiveStatus({
+      turnCount: 3,
+      taskStepCount: 2,
+      canUndo: true,
+    });
+
+    expect(mockLogCard).toHaveBeenCalledWith("当前状态");
+    expect(mockLogDetailEntries).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        { label: "会话轮数", value: "3" },
+        { label: "上一轮步骤数", value: "2" },
+        { label: "可撤销上一轮", value: "是" },
+        { label: "可撤销轮数", value: "1" },
+        { label: "Git", value: "1 个变更文件" },
+      ]),
+    );
+  });
+
+  it("/status prints current interactive status", async () => {
+    mockExeca.mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
+    mockQuestion
+      .mockResolvedValueOnce("/status")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockLogCard).toHaveBeenCalledWith("当前状态");
+    expect(mockLogDetailEntries).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        { label: "会话轮数", value: "3" },
+        { label: "可撤销轮数", value: "0" },
+        { label: "Git", value: "干净（无未提交变更）" },
+      ]),
+    );
+  });
+
+  it("printInteractiveConfig shows sanitized runtime and tooling config", async () => {
+    mockReadWorkspacePackageJson.mockResolvedValue({
+      scripts: { test: "vitest run" },
+      miniClaudeCode: {
+        commandPolicy: { safeScripts: ["verify"], guardedScripts: ["serve"] },
+      },
+    });
+    mockDetectPackageManager.mockResolvedValue("pnpm");
+
+    await printInteractiveConfig();
+
+    expect(mockLogCard).toHaveBeenCalledWith("当前配置");
+    expect(mockLogDetailEntries).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        { label: "OPENAI_API_KEY", value: "已配置" },
+        { label: "MODEL_NAME", value: "gpt-5.4" },
+        { label: "包管理器", value: "pnpm" },
+        { label: "命令安全脚本", value: "verify" },
+        { label: "命令需确认脚本", value: "serve" },
+      ]),
+    );
+  });
+
+  it("/config prints current configuration", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/config")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockLogCard).toHaveBeenCalledWith("当前配置");
+    expect(mockLogDetailEntries).toHaveBeenCalledWith(
+      expect.arrayContaining([{ label: "OPENAI_API_KEY", value: "已配置" }]),
+    );
+  });
+
+  it("/undo restores last agent changes", async () => {
+    mockUndoLastRun.mockResolvedValue({
+      finalText: "已撤销上一轮修改: src/a.ts",
+      steps: [],
+      diffs: [
+        {
+          path: "src/a.ts",
+          summary: "撤销修改",
+          diff: "--- a/src/a.ts\n+++ b/src/a.ts",
+        },
+      ],
+    });
+    mockQuestion
+      .mockResolvedValueOnce("/undo")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockUndoLastRun).toHaveBeenCalledTimes(1);
+    expect(mockLogCard).toHaveBeenCalledWith("撤销完成");
+    expect(mockLogSection).toHaveBeenCalledWith("撤销预览");
+    expect(mockLogAssistant).toHaveBeenCalledWith("已撤销上一轮修改: src/a.ts");
+  });
+
+  it("/tasks prints last task steps", async () => {
+    mockRun.mockResolvedValue({
+      diffs: [],
+      finalText: "完成",
+      steps: ["读取文件", "执行验证"],
+    });
+    mockQuestion
+      .mockResolvedValueOnce("修复问题")
+      .mockResolvedValueOnce("/tasks")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockLogSection).toHaveBeenCalledWith("任务步骤");
+    expect(mockLogCardList).toHaveBeenCalledWith("上一轮步骤", [
+      "**1.** 读取文件",
+      "**2.** 执行验证",
+    ]);
+  });
+
+  it("printTaskSteps shows empty state", () => {
+    printTaskSteps([]);
+    expect(mockLogEmptyState).toHaveBeenCalledWith(
+      "当前还没有可展示的任务步骤。",
     );
   });
 

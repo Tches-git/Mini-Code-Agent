@@ -13,7 +13,9 @@ const mockPrintSessionDetail = vi.hoisted(() => vi.fn());
 const mockRunBenchmarkCommand = vi.hoisted(() => vi.fn());
 const mockSetWorkspaceRoot = vi.hoisted(() => vi.fn());
 const mockGetWorkspaceRoot = vi.hoisted(() => vi.fn(() => "/tmp/workspace"));
-const mockGetAppDataDir = vi.hoisted(() => vi.fn(() => "/tmp/home/.mini-claude-code"));
+const mockGetAppDataDir = vi.hoisted(() =>
+  vi.fn(() => "/tmp/home/.mini-claude-code"),
+);
 
 vi.mock("../llm/env.js", () => ({
   writeEnvTemplate: mockWriteEnvTemplate,
@@ -24,7 +26,7 @@ vi.mock("../llm/env.js", () => ({
 vi.mock("../llm/client.js", () => ({
   LlmClient: class {
     checkConnectivity = mockCheckConnectivity;
-  }
+  },
 }));
 
 vi.mock("execa", () => ({
@@ -34,7 +36,7 @@ vi.mock("execa", () => ({
 vi.mock("../agent/orchestrator.js", () => ({
   AgentOrchestrator: class {
     run = mockAgentRun;
-  }
+  },
 }));
 
 vi.mock("./interactive.js", () => ({
@@ -42,7 +44,10 @@ vi.mock("./interactive.js", () => ({
 }));
 
 vi.mock("./approval-log.js", async () => {
-  const actual = await vi.importActual<typeof import("./approval-log.js")>("./approval-log.js");
+  const actual =
+    await vi.importActual<typeof import("./approval-log.js")>(
+      "./approval-log.js",
+    );
   return {
     ...actual,
     printApprovalLog: mockPrintApprovalLog,
@@ -65,7 +70,12 @@ vi.mock("../utils/runtime.js", () => ({
   getWorkspaceStateDir: () => "/tmp/home/.mini-claude-code/workspaces/demo",
 }));
 
-import { runCli, runDoctorCommand, runInitCommand, runTaskCommand } from "./index.js";
+import {
+  runCli,
+  runDoctorCommand,
+  runInitCommand,
+  runTaskCommand,
+} from "./index.js";
 
 describe("cli index output", () => {
   beforeEach(() => {
@@ -79,7 +89,9 @@ describe("cli index output", () => {
       modelName: "gpt-test",
     });
     mockLoadWorkspaceEnv.mockReset();
-    mockCheckConnectivity.mockReset().mockResolvedValue({ ok: true, detail: "ok" });
+    mockCheckConnectivity
+      .mockReset()
+      .mockResolvedValue({ ok: true, detail: "ok" });
     mockExeca.mockReset().mockResolvedValue({ stdout: "ripgrep 14.1.0" });
     mockAgentRun.mockReset().mockResolvedValue({
       steps: [],
@@ -93,7 +105,9 @@ describe("cli index output", () => {
     mockRunBenchmarkCommand.mockReset();
     mockSetWorkspaceRoot.mockReset();
     mockGetWorkspaceRoot.mockReset().mockReturnValue("/tmp/workspace");
-    mockGetAppDataDir.mockReset().mockReturnValue("/tmp/home/.mini-claude-code");
+    mockGetAppDataDir
+      .mockReset()
+      .mockReturnValue("/tmp/home/.mini-claude-code");
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
@@ -175,13 +189,33 @@ describe("cli index output", () => {
   });
 
   it("runCli routes sessions json command to sessions printer", async () => {
-    await runCli(["node", "mini-claude-code", "sessions", "--json", "--sort", "turns"]);
-    expect(mockPrintSessions).toHaveBeenCalledWith({ json: true, limit: 10, page: 1, sort: "turns" });
+    await runCli([
+      "node",
+      "mini-claude-code",
+      "sessions",
+      "--json",
+      "--sort",
+      "turns",
+    ]);
+    expect(mockPrintSessions).toHaveBeenCalledWith({
+      json: true,
+      limit: 10,
+      page: 1,
+      sort: "turns",
+    });
   });
 
   it("runCli routes session detail json command", async () => {
-    await runCli(["node", "mini-claude-code", "session", "session-1", "--json"]);
-    expect(mockPrintSessionDetail).toHaveBeenCalledWith("session-1", { json: true });
+    await runCli([
+      "node",
+      "mini-claude-code",
+      "session",
+      "session-1",
+      "--json",
+    ]);
+    expect(mockPrintSessionDetail).toHaveBeenCalledWith("session-1", {
+      json: true,
+    });
   });
 
   it("runCli enters interactive mode when no task is provided", async () => {
@@ -197,7 +231,11 @@ describe("cli index output", () => {
   });
 
   it("package scripts include terminal ui guard command", async () => {
-    const packageJson = await import("../../package.json", { with: { type: "json" } });
-    expect(packageJson.default.scripts["guard:terminal-ui"]).toBe("npm test && npm run build");
+    const packageJson = await import("../../package.json", {
+      with: { type: "json" },
+    });
+    expect(packageJson.default.scripts["guard:terminal-ui"]).toBe(
+      "npm test && npm run build",
+    );
   });
 });

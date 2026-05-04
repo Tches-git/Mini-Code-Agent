@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { logCard, logCardList, logDiffHeader, logDiffLine, logRenderedText } from "./logger.js";
+import {
+  logCard,
+  logCardList,
+  logDiffHeader,
+  logDiffLine,
+  logRenderedText,
+} from "./logger.js";
 
 describe("logger terminal canary snapshots", () => {
   beforeEach(() => {
@@ -24,9 +30,15 @@ describe("logger terminal canary snapshots", () => {
     logCardList("会话列表", [
       "**session-1** · 修复一个很长很长的标题需要观察换行效果 · 2026-04-21 · 3 轮",
     ]);
-    logDiffHeader("/very/long/path/" + "segment/".repeat(8) + "file.ts", "summary");
+    logDiffHeader(`/very/long/path/${"segment/".repeat(8)}file.ts`, "summary");
     logDiffLine(`+ ${"abcdef ".repeat(12)}`);
-    logRenderedText(["| 字段 | 值 |", "| --- | --- |", "| 路径 | supercalifragilisticexpialidocious |"].join("\n"));
+    logRenderedText(
+      [
+        "| 字段 | 值 |",
+        "| --- | --- |",
+        "| 路径 | supercalifragilisticexpialidocious |",
+      ].join("\n"),
+    );
 
     const output = vi.mocked(console.log).mock.calls.flat().join("\n");
     expect(output).toMatchInlineSnapshot(`"
@@ -72,11 +84,13 @@ describe("logger terminal canary snapshots", () => {
       configurable: true,
     });
 
-    logRenderedText([
-      "| 项目方向 | 简介 | 亮点 | 所需技能 |",
-      "| --- | --- | --- | --- |",
-      "| 文档问答系统 | 用户上传 PDF/Word 等文档，系统自动提取内容并回答问题 | 接近真实业务场景，可展示端到端能力 | 文本分块、向量化、向量数据库 |",
-    ].join("\n"));
+    logRenderedText(
+      [
+        "| 项目方向 | 简介 | 亮点 | 所需技能 |",
+        "| --- | --- | --- | --- |",
+        "| 文档问答系统 | 用户上传 PDF/Word 等文档，系统自动提取内容并回答问题 | 接近真实业务场景，可展示端到端能力 | 文本分块、向量化、向量数据库 |",
+      ].join("\n"),
+    );
 
     const output = vi.mocked(console.log).mock.calls.flat().join("\n");
     expect(output).toMatchInlineSnapshot(`"  ┌─ 文档问答系统

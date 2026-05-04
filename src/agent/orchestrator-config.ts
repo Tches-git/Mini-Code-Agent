@@ -3,6 +3,7 @@ export const MODIFYING_TOOLS = new Set([
   "write_file",
   "append_text",
   "insert_after",
+  "replace_range",
   "replace_text",
   "import_external_file",
 ]);
@@ -31,14 +32,22 @@ export const EXTERNAL_ANALYSIS_EXECUTION_ROUND_LIMIT = Math.max(
 );
 export const READ_ONLY_TOOLS = new Set([
   "list_files",
+  "tree_files",
   "read_file",
+  "inspect_file",
+  "glob_files",
   "search_text",
   "project_map",
+  "read_command_output",
   "import_external_file",
 ]);
 export const PARALLELIZABLE_TOOLS = new Set([
   "list_files",
+  "tree_files",
   "read_file",
+  "inspect_file",
+  "glob_files",
   "search_text",
   "project_map",
+  "read_command_output",
 ]);

@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -41,6 +41,7 @@ describe("session storage", () => {
 
     const loaded = await loadSession();
     expect(loaded?.id).toBe(id);
+    expect(loaded?.version).toBe(1);
     expect(loaded?.title).toContain("分析这个项目");
     expect(loaded?.summary).toContain("读取了 src/agent/orchestrator.ts");
     expect(loaded?.turnCount).toBe(1);
@@ -93,5 +94,66 @@ describe("session storage", () => {
     const latest = await loadSession();
     expect(latest?.id).toBe(firstId);
     expect(await loadSession(secondId)).toBeNull();
+  });
+
+  it("repairs latest pointer when latest session file is missing", async () => {
+    const firstId = await saveSession({
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "第一个会话" },
+      ],
+      summaryLines: [],
+      summaryFocus: { files: [], keywords: [] },
+    });
+
+    const secondId = await saveSession({
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "第二个会话" },
+      ],
+      summaryLines: [],
+      summaryFocus: { files: [], keywords: [] },
+    });
+
+    await writeFile(path.join(sessionDir, "latest.txt"), secondId, "utf8");
+    await unlink(path.join(sessionDir, `${secondId}.json`));
+
+    const latest = await loadSession();
+    expect(latest?.id).toBe(firstId);
+    await expect(
+      readFile(path.join(sessionDir, "latest.txt"), "utf8"),
+    ).resolves.toContain(firstId);
+  });
+
+  it("filters invalid entries from session index", async () => {
+    const validId = await saveSession({
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "有效会话" },
+      ],
+      summaryLines: [],
+      summaryFocus: { files: [], keywords: [] },
+    });
+
+    await writeFile(
+      path.join(sessionDir, "index.json"),
+      JSON.stringify([
+        {
+          id: validId,
+          title: "有效会话",
+          summary: "ok",
+          latestUserMessage: "hi",
+          createdAt: "2026-04-20",
+          updatedAt: "2026-04-20",
+          turnCount: 1,
+        },
+        { title: "损坏条目" },
+      ]),
+      "utf8",
+    );
+
+    const sessions = await listSessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.id).toBe(validId);
   });
 });

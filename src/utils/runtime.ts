@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 
 function normalizePathSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
+  return (
+    value.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") ||
+    "workspace"
+  );
 }
 
 export function getWorkspaceRoot(): string {
@@ -31,7 +34,10 @@ export function getWorkspaceStateDir(): string {
   }
 
   const workspaceRoot = getWorkspaceRoot();
-  const hash = createHash("sha1").update(workspaceRoot).digest("hex").slice(0, 12);
+  const hash = createHash("sha1")
+    .update(workspaceRoot)
+    .digest("hex")
+    .slice(0, 12);
   const name = normalizePathSegment(path.basename(workspaceRoot));
   return path.join(getAppDataDir(), "workspaces", `${name}-${hash}`);
 }

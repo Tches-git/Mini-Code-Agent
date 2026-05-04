@@ -58,12 +58,16 @@ export function logEmptyState(text: string) {
 }
 
 export function logHint(text: string) {
-  console.log(chalk.blue("  💡 ") + chalk.gray(formatInlineText(stripMarkdown(text))));
+  console.log(
+    chalk.blue("  💡 ") + chalk.gray(formatInlineText(stripMarkdown(text))),
+  );
 }
 
 export function logKeyValue(label: string, value: string, indent = "  ") {
   const formattedValue = formatInlineText(stripMarkdown(value));
-  console.log(`${chalk.gray(`${indent}• `)}${chalk.cyan(label)} ${chalk.white(formattedValue)}`);
+  console.log(
+    `${chalk.gray(`${indent}• `)}${chalk.cyan(label)} ${chalk.white(formattedValue)}`,
+  );
 }
 
 export function logListItem(text: string, indent = "  ") {
@@ -75,7 +79,9 @@ export function logListItem(text: string, indent = "  ") {
   }
 
   const [firstLine, ...rest] = lines;
-  console.log(`${chalk.gray(`${indent}• `)}${stripLeadingIndent(firstLine, nestedIndent)}`);
+  console.log(
+    `${chalk.gray(`${indent}• `)}${stripLeadingIndent(firstLine, nestedIndent)}`,
+  );
   for (const line of rest) {
     if (line === "") {
       console.log("");
@@ -122,7 +128,9 @@ export function logStatusLine(
         : status === "SKIP"
           ? "yellow"
           : "blue";
-  console.log(`${indent}${renderStatusTag(status, color)} ${formatInlineText(stripMarkdown(text))}`);
+  console.log(
+    `${indent}${renderStatusTag(status, color)} ${formatInlineText(stripMarkdown(text))}`,
+  );
 }
 
 export function logDiffHeader(path: string, summary: string) {
@@ -157,26 +165,41 @@ export function logDiffLine(line: string) {
 }
 
 export function logToolCall(name: string, args: string) {
-  const short = truncatePlainText(args, Math.max(24, getTerminalWidth() - name.length - 10));
+  const short = truncatePlainText(
+    args,
+    Math.max(24, getTerminalWidth() - name.length - 10),
+  );
   logStatusLine("INFO", `工具调用 ${name} · ${short}`);
 }
 
 export function logToolResult(name: string, result: string) {
-  const short = truncatePlainText(result, Math.max(24, getTerminalWidth() - name.length - 10));
+  const short = truncatePlainText(
+    result,
+    Math.max(24, getTerminalWidth() - name.length - 10),
+  );
   logStatusLine("PASS", `${name} → ${short}`);
 }
 
 export function logToolError(name: string, error: string) {
-  const short = truncatePlainText(error, Math.max(24, getTerminalWidth() - name.length - 10));
+  const short = truncatePlainText(
+    error,
+    Math.max(24, getTerminalWidth() - name.length - 10),
+  );
   logStatusLine("FAIL", `${name} → ${short}`);
 }
 
 export function logAutoValidate(command: string) {
-  logStatusLine("INFO", `自动验证 · ${truncatePlainText(command, getTerminalWidth() - 16)}`);
+  logStatusLine(
+    "INFO",
+    `自动验证 · ${truncatePlainText(command, getTerminalWidth() - 16)}`,
+  );
 }
 
 export function logAutoValidateSkipped(reason: string) {
-  logStatusLine("SKIP", `自动验证已跳过 · ${truncatePlainText(reason, getTerminalWidth() - 20)}`);
+  logStatusLine(
+    "SKIP",
+    `自动验证已跳过 · ${truncatePlainText(reason, getTerminalWidth() - 20)}`,
+  );
 }
 
 export function logAutoFix(round: number) {
@@ -184,11 +207,16 @@ export function logAutoFix(round: number) {
 }
 
 export function logContextTrimmed(removed: number, totalTokens: number) {
-  logStatusLine("INFO", `上下文裁剪 · 移除 ${removed} 条旧消息 · 当前约 ${totalTokens} tokens`);
+  logStatusLine(
+    "INFO",
+    `上下文裁剪 · 移除 ${removed} 条旧消息 · 当前约 ${totalTokens} tokens`,
+  );
 }
 
 export function logFileModified(path?: string) {
-  const safePath = path ? truncatePlainText(path, Math.max(20, getTerminalWidth() - 22)) : "(unknown)";
+  const safePath = path
+    ? truncatePlainText(path, Math.max(20, getTerminalWidth() - 22))
+    : "(unknown)";
   logStatusLine("INFO", `文件已修改 · ${safePath}`);
 }
 

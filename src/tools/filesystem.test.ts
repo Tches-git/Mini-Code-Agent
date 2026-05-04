@@ -1,20 +1,30 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
+  buildTreeFilesOutput,
   cleanupExtractedText,
   columnLettersToIndex,
+  countPdfPages,
   decodeXmlEntities,
   extractOpenDocumentCellText,
   extractXmlTextRuns,
+  formatReadFileContent,
   getBackupRelativePath,
   getExtension,
+  getMimeType,
   getXmlTagText,
+  inspectFileContent,
+  inspectImageDimensions,
+  isProbablyTextBuffer,
   isReadableTextFile,
   normalizeImportMode,
   normalizeSlashes,
   parseSharedStrings,
   parseXlsxCellValue,
   parseXlsxSheetRows,
+  replaceLineRangeContent,
   resolveAccessiblePath,
   resolveWorkspacePath,
   sanitizeFileName,
@@ -25,6 +35,14 @@ import {
 } from "./filesystem.js";
 
 const root = process.cwd();
+let tempDir: string | null = null;
+
+afterEach(async () => {
+  if (tempDir) {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    tempDir = null;
+  }
+});
 
 describe("decodeXmlEntities", () => {
   it("解码标准 XML 实体", () => {
@@ -305,6 +323,78 @@ describe("isReadableTextFile", () => {
   });
 });
 
+describe("inspect helpers", () => {
+  it("根据扩展名推断 MIME", () => {
+    expect(getMimeType("a.png")).toBe("image/png");
+    expect(getMimeType("a.md")).toBe("text/markdown");
+    expect(getMimeType("a.unknown")).toBe("application/octet-stream");
+  });
+
+  it("判断文本和二进制 buffer", () => {
+    expect(isProbablyTextBuffer(Buffer.from("hello\nworld", "utf8"))).toBe(
+      true,
+    );
+    expect(isProbablyTextBuffer(Buffer.from([0, 1, 2, 3]))).toBe(false);
+  });
+
+  it("读取 PNG 尺寸", () => {
+    const buffer = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(
+      buffer,
+      0,
+    );
+    buffer.writeUInt32BE(640, 16);
+    buffer.writeUInt32BE(480, 20);
+
+    expect(inspectImageDimensions(buffer, "image.png")).toEqual({
+      width: 640,
+      height: 480,
+    });
+  });
+
+  it("读取 WebP VP8X 尺寸", () => {
+    const buffer = Buffer.alloc(30);
+    buffer.write("RIFF", 0, "ascii");
+    buffer.write("WEBP", 8, "ascii");
+    buffer.write("VP8X", 12, "ascii");
+    buffer.writeUIntLE(639, 24, 3);
+    buffer.writeUIntLE(479, 27, 3);
+
+    expect(inspectImageDimensions(buffer, "image.webp")).toEqual({
+      width: 640,
+      height: 480,
+    });
+  });
+
+  it("统计 PDF 页数", () => {
+    const pdf = Buffer.from(
+      "%PDF-1.7\n1 0 obj<</Type /Page>>\n2 0 obj<</Type /Pages>>\n3 0 obj<</Type /Page>>",
+      "latin1",
+    );
+    expect(countPdfPages(pdf)).toBe(2);
+  });
+
+  it("输出文件摘要和建议", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "inspect-file-"));
+    const filePath = path.join(tempDir, "notes.txt");
+    await fs.writeFile(filePath, "hello", "utf8");
+
+    const result = JSON.parse(
+      await inspectFileContent({ path: filePath, confirmed: true }),
+    ) as {
+      sizeBytes: number;
+      extension: string;
+      likelyText: boolean;
+      suggestion: string;
+    };
+
+    expect(result.sizeBytes).toBe(5);
+    expect(result.extension).toBe(".txt");
+    expect(result.likelyText).toBe(true);
+    expect(result.suggestion).toContain("read_file");
+  });
+});
+
 describe("normalizeSlashes", () => {
   it("反斜杠转正斜杠", () => {
     expect(normalizeSlashes("a\\b\\c")).toBe("a/b/c");
@@ -368,6 +458,134 @@ describe("toDisplayPath", () => {
   it("工作区外路径显示为绝对", () => {
     const result = toDisplayPath("/tmp/outside.ts");
     expect(result).toContain("/tmp/outside.ts");
+  });
+});
+
+describe("formatReadFileContent", () => {
+  it("默认返回带文件、行号和截断信息的内容", () => {
+    const result = formatReadFileContent("a\nb\nc", { path: "src/a.ts" });
+
+    expect(result).toBe(
+      [
+        "File: src/a.ts",
+        "Lines: 1-3 of 3",
+        "Truncated: false",
+        "",
+        "a",
+        "b",
+        "c",
+      ].join("\n"),
+    );
+  });
+
+  it("支持 offset/limit 分页并提示继续读取参数", () => {
+    const result = formatReadFileContent("a\nb\nc\nd", {
+      path: "src/a.ts",
+      offset: 1,
+      limit: 2,
+    });
+
+    expect(result).toBe(
+      [
+        "File: src/a.ts",
+        "Lines: 2-3 of 4",
+        "Truncated: true (use offset=3, limit=2 to continue)",
+        "",
+        "b",
+        "c",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("buildTreeFilesOutput", () => {
+  it("输出目录树并跳过默认忽略目录", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "tree-files-"));
+    await fs.mkdir(path.join(tempDir, "src", "nested"), { recursive: true });
+    await fs.mkdir(path.join(tempDir, "node_modules", "pkg"), {
+      recursive: true,
+    });
+    await fs.writeFile(path.join(tempDir, "src", "index.ts"), "", "utf8");
+    await fs.writeFile(
+      path.join(tempDir, "src", "nested", "deep.ts"),
+      "",
+      "utf8",
+    );
+    await fs.writeFile(path.join(tempDir, "README.md"), "", "utf8");
+
+    const result = await buildTreeFilesOutput({
+      path: tempDir,
+      maxDepth: 3,
+      confirmed: true,
+    });
+
+    expect(result).toContain("src/");
+    expect(result).toContain("index.ts");
+    expect(result).toContain("README.md");
+    expect(result).not.toContain("node_modules/");
+    expect(result).toContain("Skipped ignored directories: 1");
+    expect(result).toContain("Truncated: false");
+  });
+
+  it("遵守 maxEntries 截断", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "tree-files-limit-"));
+    await fs.writeFile(path.join(tempDir, "a.ts"), "", "utf8");
+    await fs.writeFile(path.join(tempDir, "b.ts"), "", "utf8");
+
+    const result = await buildTreeFilesOutput({
+      path: tempDir,
+      maxEntries: 1,
+      confirmed: true,
+    });
+
+    expect(result).toContain("Entries: 1");
+    expect(result).toContain("Truncated: true");
+  });
+});
+
+describe("replaceLineRangeContent", () => {
+  it("替换单行", () => {
+    expect(
+      replaceLineRangeContent("a\nb\nc", {
+        path: "x.ts",
+        startLine: 2,
+        endLine: 2,
+        content: "B",
+      }),
+    ).toBe("a\nB\nc");
+  });
+
+  it("替换多行为多行", () => {
+    expect(
+      replaceLineRangeContent("a\nb\nc\nd", {
+        path: "x.ts",
+        startLine: 2,
+        endLine: 3,
+        content: "B\nC",
+      }),
+    ).toBe("a\nB\nC\nd");
+  });
+
+  it("拒绝无效行号范围", () => {
+    expect(() =>
+      replaceLineRangeContent("a\nb", {
+        path: "x.ts",
+        startLine: 2,
+        endLine: 1,
+        content: "x",
+      }),
+    ).toThrow("行号范围无效");
+  });
+
+  it("拒绝越界行号", () => {
+    expect(() =>
+      replaceLineRangeContent("a\nb", {
+        path: "x.ts",
+        startLine: 2,
+        endLine: 3,
+        content: "x",
+      }),
+    ).toThrow("行号范围超出文件长度");
   });
 });
 

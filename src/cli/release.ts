@@ -1,5 +1,10 @@
 import { buildStandaloneExecutable } from "../release/standalone.js";
-import { logHint, logKeyValue, logSection, logSuccess } from "../utils/logger.js";
+import {
+  logHint,
+  logKeyValue,
+  logSection,
+  logSuccess,
+} from "../utils/logger.js";
 
 export async function runReleaseStandaloneCommand(options?: {
   outputDir?: string;

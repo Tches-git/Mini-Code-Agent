@@ -97,8 +97,28 @@ describe("ApprovalManager", () => {
       manager.confirmExternalPathAccess("project_map", "/tmp/project", steps),
     ).resolves.toBe(false);
     expect(
-      steps.some((step) => step.includes("工作区外路径") || step.includes("读取")),
+      steps.some(
+        (step) => step.includes("工作区外路径") || step.includes("读取"),
+      ),
     ).toBe(true);
+  });
+
+  it("glob_files 访问工作区外目录时按列目录确认", async () => {
+    const onConfirm = vi.fn().mockResolvedValue(true);
+    const steps: string[] = [];
+    const manager = new ApprovalManager(onConfirm);
+
+    await expect(
+      manager.confirmExternalPathAccess("glob_files", "/tmp/project", steps),
+    ).resolves.toBe(true);
+
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "external_path",
+        path: "/tmp/project",
+        action: "list",
+      }),
+    );
   });
 
   it("外部文件导入确认通过后记录 approved", async () => {

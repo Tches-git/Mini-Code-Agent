@@ -28,14 +28,19 @@ describe("runBenchmark report summary", () => {
   it(
     "aggregates byCategory, skipReasons and failures",
     async () => {
-      mockChatStream.mockImplementation(async (_messages, _tools, _onEvent) => ({
-        text: "完成。",
-        toolCalls: [],
-      }));
+      mockChatStream.mockImplementation(
+        async (_messages, _tools, _onEvent) => ({
+          text: "完成。",
+          toolCalls: [],
+        }),
+      );
 
       const report = await runBenchmark({
         taskIds: [
           "project-structure-overview",
+          "claude-code-tooling-smoke",
+          "interactive-cli-commands-smoke",
+          "file-and-command-inspection-smoke",
           "fix-readme-command",
           "rename-local-symbol",
           "fix-interactive-resume-regression",
@@ -50,7 +55,7 @@ describe("runBenchmark report summary", () => {
 
       expect(report.summary.byCategory).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ category: "read", total: 1 }),
+          expect.objectContaining({ category: "read", total: 4 }),
           expect.objectContaining({ category: "edit", total: 2 }),
           expect.objectContaining({ category: "validate", total: 3 }),
         ]),

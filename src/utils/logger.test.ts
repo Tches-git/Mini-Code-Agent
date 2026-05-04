@@ -27,11 +27,9 @@ describe("renderRichTextLines", () => {
   });
 
   it("renders markdown tables into box-style rows", () => {
-    const lines = renderRichTextLines([
-      "| 列1 | 列2 |",
-      "| --- | --- |",
-      "| 值A | 值B |",
-    ].join("\n"));
+    const lines = renderRichTextLines(
+      ["| 列1 | 列2 |", "| --- | --- |", "| 值A | 值B |"].join("\n"),
+    );
     const output = lines.join("\n");
     expect(output).toContain("┌");
     expect(output).toContain("│");
@@ -65,11 +63,13 @@ describe("renderRichTextLines", () => {
       configurable: true,
     });
 
-    const lines = renderRichTextLines([
-      "| 列1 | 列2 |",
-      "| --- | --- |",
-      "| short | supercalifragilisticexpialidocious |",
-    ].join("\n"));
+    const lines = renderRichTextLines(
+      [
+        "| 列1 | 列2 |",
+        "| --- | --- |",
+        "| short | supercalifragilisticexpialidocious |",
+      ].join("\n"),
+    );
 
     expect(lines.join("\n")).toContain("superc");
     expect(lines.length).toBeGreaterThan(5);
@@ -81,7 +81,9 @@ describe("renderRichTextLines", () => {
   });
 
   it("keeps code blocks rendered as code sections", () => {
-    const lines = renderRichTextLines(["```ts", "const path = '/very/long/path';", "```"].join("\n"));
+    const lines = renderRichTextLines(
+      ["```ts", "const path = '/very/long/path';", "```"].join("\n"),
+    );
     expect(lines.join("\n")).toContain("┌─ code");
     expect(lines.join("\n")).toContain("const path");
   });
@@ -93,11 +95,13 @@ describe("renderRichTextLines", () => {
       configurable: true,
     });
 
-    const lines = renderRichTextLines([
-      "| 项目方向 | 简介 | 亮点 | 所需技能 |",
-      "| --- | --- | --- | --- |",
-      "| 文档问答系统 | 用户上传 PDF/Word 等文档，系统自动提取内容并回答问题 | 接近真实业务场景，可展示端到端能力 | 文本分块、向量化、向量数据库 |",
-    ].join("\n"));
+    const lines = renderRichTextLines(
+      [
+        "| 项目方向 | 简介 | 亮点 | 所需技能 |",
+        "| --- | --- | --- | --- |",
+        "| 文档问答系统 | 用户上传 PDF/Word 等文档，系统自动提取内容并回答问题 | 接近真实业务场景，可展示端到端能力 | 文本分块、向量化、向量数据库 |",
+      ].join("\n"),
+    );
 
     const output = lines.join("\n");
     expect(output).toContain("┌─ 文档问答系统");
@@ -140,7 +144,10 @@ describe("logger console helpers", () => {
       configurable: true,
     });
 
-    logStep(1, "这是一个很长的步骤描述，用来验证 step output automatically wraps long English guidance and keeps indentation aligned across multiple lines.");
+    logStep(
+      1,
+      "这是一个很长的步骤描述，用来验证 step output automatically wraps long English guidance and keeps indentation aligned across multiple lines.",
+    );
     expect(vi.mocked(console.log).mock.calls.length).toBeGreaterThan(1);
 
     Object.defineProperty(process.stdout, "columns", {
@@ -204,7 +211,7 @@ describe("logger console helpers", () => {
   });
 
   it("logDiffHeader truncates very long paths", () => {
-    logDiffHeader("/very/long/path/" + "segment/".repeat(20) + "file.ts", "summary");
+    logDiffHeader(`/very/long/path/${"segment/".repeat(20)}file.ts`, "summary");
     const calls = vi.mocked(console.log).mock.calls.flat().join("\n");
     expect(calls).toContain("文件");
     expect(calls).toContain("summary");

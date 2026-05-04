@@ -30,10 +30,13 @@ export type SessionSummary = {
 };
 
 export type SessionData = SessionSummary & {
+  version: number;
   messages: ChatMessage[];
   summaryLines: string[];
   summaryFocus: SummaryFocus;
 };
+
+const SESSION_DATA_VERSION = 1;
 
 function getSessionFile(id: string): string {
   return path.join(getSessionDir(), `${id}.json`);
@@ -80,11 +83,52 @@ async function ensureSessionDir(): Promise<void> {
   await fs.mkdir(getSessionDir(), { recursive: true });
 }
 
+function normalizeSessionSummary(
+  session: Partial<SessionSummary> | null | undefined,
+): SessionSummary | null {
+  if (!session || typeof session.id !== "string" || !session.id.trim()) {
+    return null;
+  }
+
+  return {
+    id: session.id,
+    title:
+      typeof session.title === "string" && session.title.trim()
+        ? session.title
+        : "新会话",
+    summary:
+      typeof session.summary === "string" && session.summary.trim()
+        ? session.summary
+        : "暂无摘要",
+    latestUserMessage:
+      typeof session.latestUserMessage === "string"
+        ? session.latestUserMessage
+        : "",
+    createdAt: typeof session.createdAt === "string" ? session.createdAt : "",
+    updatedAt:
+      typeof session.updatedAt === "string"
+        ? session.updatedAt
+        : typeof session.createdAt === "string"
+          ? session.createdAt
+          : "",
+    turnCount:
+      typeof session.turnCount === "number" &&
+      Number.isFinite(session.turnCount)
+        ? session.turnCount
+        : 0,
+  };
+}
+
 async function readSessionIndex(): Promise<SessionSummary[]> {
   try {
     const content = await fs.readFile(getSessionIndexFile(), "utf8");
     const parsed = JSON.parse(content) as unknown;
-    return Array.isArray(parsed) ? (parsed as SessionSummary[]) : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((item) => normalizeSessionSummary(item as Partial<SessionSummary>))
+      .filter((item): item is SessionSummary => Boolean(item));
   } catch {
     return [];
   }
@@ -113,6 +157,20 @@ async function readLatestSessionId(): Promise<string | null> {
   }
 }
 
+async function repairLatestSessionPointer(
+  index: SessionSummary[],
+): Promise<string | null> {
+  for (const item of index) {
+    try {
+      await fs.access(getSessionFile(item.id));
+      await writeLatestSessionId(item.id);
+      return item.id;
+    } catch {}
+  }
+  await fs.unlink(getLatestSessionFile()).catch(() => {});
+  return null;
+}
+
 export async function saveSession(data: {
   id?: string;
   messages: ChatMessage[];
@@ -132,6 +190,7 @@ export async function saveSession(data: {
 
   const payload: SessionData = {
     id,
+    version: SESSION_DATA_VERSION,
     title,
     summary,
     latestUserMessage,
@@ -169,12 +228,28 @@ export async function saveSession(data: {
 
 export async function loadSession(id?: string): Promise<SessionData | null> {
   try {
-    const sessionId = id || (await readLatestSessionId());
+    let sessionId = id || (await readLatestSessionId());
     if (!sessionId) {
       return null;
     }
 
-    const content = await fs.readFile(getSessionFile(sessionId), "utf8");
+    let content: string;
+    try {
+      content = await fs.readFile(getSessionFile(sessionId), "utf8");
+    } catch {
+      if (id) {
+        return null;
+      }
+      const repairedSessionId = await repairLatestSessionPointer(
+        await readSessionIndex(),
+      );
+      if (!repairedSessionId || repairedSessionId === sessionId) {
+        return null;
+      }
+      sessionId = repairedSessionId;
+      content = await fs.readFile(getSessionFile(sessionId), "utf8");
+    }
+
     const parsed = JSON.parse(content) as unknown;
     if (!parsed || typeof parsed !== "object") {
       return null;
@@ -192,6 +267,10 @@ export async function loadSession(id?: string): Promise<SessionData | null> {
 
     return {
       id: data.id || sessionId,
+      version:
+        typeof data.version === "number" && Number.isFinite(data.version)
+          ? data.version
+          : SESSION_DATA_VERSION,
       title:
         typeof data.title === "string" && data.title.trim()
           ? data.title
@@ -218,7 +297,26 @@ export async function loadSession(id?: string): Promise<SessionData | null> {
 
 export async function listSessions(): Promise<SessionSummary[]> {
   const index = await readSessionIndex();
-  return index.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const validSessions: SessionSummary[] = [];
+
+  for (const item of index) {
+    try {
+      await fs.access(getSessionFile(item.id));
+      validSessions.push(item);
+    } catch {}
+  }
+
+  const sorted = validSessions.sort((a, b) =>
+    b.updatedAt.localeCompare(a.updatedAt),
+  );
+  if (sorted.length !== index.length) {
+    await writeSessionIndex(sorted);
+    const latestId = await readLatestSessionId();
+    if (!latestId || !sorted.some((session) => session.id === latestId)) {
+      await repairLatestSessionPointer(sorted);
+    }
+  }
+  return sorted;
 }
 
 export async function clearSession(id?: string): Promise<void> {

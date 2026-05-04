@@ -6,7 +6,13 @@ import {
   type CommandAuditSource,
   readCommandAuditEntries,
 } from "../utils/command-audit.js";
-import { logCardList, logDetailEntries, logEmptyState, logRenderedText, logSection } from "../utils/logger.js";
+import {
+  logCardList,
+  logDetailEntries,
+  logEmptyState,
+  logRenderedText,
+  logSection,
+} from "../utils/logger.js";
 
 export type ApprovalLogFilters = {
   contains?: string;
@@ -225,7 +231,13 @@ export async function printApprovalLog(
 
   if (options?.json) {
     if (options.stats) {
-      console.log(JSON.stringify({ total: allEntries.length, page, pageSize, entries }, null, 2));
+      console.log(
+        JSON.stringify(
+          { total: allEntries.length, page, pageSize, entries },
+          null,
+          2,
+        ),
+      );
       return;
     }
     console.log(JSON.stringify(entries, null, 2));
@@ -245,14 +257,18 @@ export async function printApprovalLog(
     console.log();
   }
 
-  logDetailEntries(
-    [
-      { label: "排序", value: filters.sort === "oldest" ? "最早优先" : "最新优先" },
-      { label: "页码", value: `${page}/${Math.max(1, Math.ceil(allEntries.length / pageSize))}` },
-      { label: "每页条数", value: String(pageSize) },
-      { label: "匹配总数", value: String(allEntries.length) },
-    ],
-  );
+  logDetailEntries([
+    {
+      label: "排序",
+      value: filters.sort === "oldest" ? "最早优先" : "最新优先",
+    },
+    {
+      label: "页码",
+      value: `${page}/${Math.max(1, Math.ceil(allEntries.length / pageSize))}`,
+    },
+    { label: "每页条数", value: String(pageSize) },
+    { label: "匹配总数", value: String(allEntries.length) },
+  ]);
 
   for (const entry of entries) {
     logCardList("审批项", [
@@ -262,8 +278,13 @@ export async function printApprovalLog(
       [
         { label: "时间", value: formatTimestamp(entry.timestamp) },
         { label: "来源", value: entry.source },
-        { label: "类别", value: `${formatKind(entry.kind)} / ${formatAction(entry.action)}` },
-        ...(entry.targetPath ? [{ label: "路径", value: entry.targetPath }] : []),
+        {
+          label: "类别",
+          value: `${formatKind(entry.kind)} / ${formatAction(entry.action)}`,
+        },
+        ...(entry.targetPath
+          ? [{ label: "路径", value: entry.targetPath }]
+          : []),
         { label: "原因", value: compressText(entry.reason, 120) },
       ],
       "    ",

@@ -57,9 +57,6 @@ export type AgentRunResult = {
   diffs: DiffEntry[];
 };
 
-// __BENCHMARK_TS_FIXED__
-export const __BENCHMARK_TS_ERROR__ = 0;
-
 export type ToolResult = {
   message: string;
   diff?: DiffEntry;

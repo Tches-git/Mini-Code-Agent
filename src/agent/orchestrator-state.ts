@@ -6,6 +6,10 @@ import {
   trimMessagesWithMetadata,
 } from "../utils/token.js";
 import {
+  MAX_CONTEXT_TOKENS,
+  MAX_SUMMARY_LINES,
+} from "./orchestrator-config.js";
+import {
   compactSummaryLines,
   deriveFocusFromMessage,
   deriveFocusFromPaths,
@@ -13,7 +17,6 @@ import {
   type SummaryFocus,
   summarizeRemovedMessage,
 } from "./summary.js";
-import { MAX_CONTEXT_TOKENS, MAX_SUMMARY_LINES } from "./orchestrator-config.js";
 
 export class OrchestratorState {
   messages: ChatMessage[];
@@ -61,7 +64,9 @@ export class OrchestratorState {
   }
 
   mergeSummary(removedMessages: ChatMessage[]) {
-    const newLines = removedMessages.flatMap((message) => summarizeRemovedMessage(message));
+    const newLines = removedMessages.flatMap((message) =>
+      summarizeRemovedMessage(message),
+    );
     if (newLines.length === 0) return;
 
     this.summaryLines = compactSummaryLines(
@@ -87,7 +92,11 @@ export class OrchestratorState {
   }
 
   trimContextIfNeeded(
-    emit: (event: { type: "context_trimmed"; removed: number; totalTokens: number }) => void,
+    emit: (event: {
+      type: "context_trimmed";
+      removed: number;
+      totalTokens: number;
+    }) => void,
   ) {
     let removedCount = 0;
 

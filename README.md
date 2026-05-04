@@ -526,7 +526,16 @@ npm run pack:check
 npm run pack:verify
 npm run release:check:standalone
 npm run benchmark -- --list
+npm run benchmark:smoke
+npm run release:check
+npm run release:check:standalone
 ```
+
+### 推荐质量门禁
+
+- **开发前自检**：`npm test`、`npm run build`
+- **PR / 合并前**：`npm run check`、`npm run pack:verify`
+- **发布前**：`npm run release:check`、`npm run benchmark:smoke`、`npm run release:check:standalone`
 
 当前项目包含：
 - 单元测试 / CLI 回归测试
@@ -565,6 +574,7 @@ npm run benchmark -- --list
 npm run benchmark
 npm run benchmark -- --isolation-mode temp_copy
 npm run benchmark -- --task project-structure-overview --task validation-loop --json
+npm run benchmark:smoke
 ```
 
 ## 适合简历的项目描述

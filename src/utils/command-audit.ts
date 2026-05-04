@@ -117,15 +117,18 @@ function parseFileAccessCommand(
     firstSpace >= 0 ? remainder.slice(firstSpace + 1).trim() : undefined;
 
   const action =
-    toolName === "list_files"
+    toolName === "list_files" ||
+    toolName === "tree_files" ||
+    toolName === "glob_files"
       ? "list"
-      : toolName === "read_file"
+      : toolName === "read_file" || toolName === "inspect_file"
         ? "read"
         : toolName === "search_text"
           ? "search"
           : toolName === "write_file" ||
               toolName === "append_text" ||
               toolName === "insert_after" ||
+              toolName === "replace_range" ||
               toolName === "replace_text" ||
               toolName === "create_file"
             ? "write"

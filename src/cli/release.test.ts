@@ -36,7 +36,13 @@ describe("runReleaseStandaloneCommand", () => {
 
     await runReleaseStandaloneCommand();
 
-    expect(mockLogKeyValue).toHaveBeenCalledWith("可执行文件", "/tmp/out/mini-claude-code");
-    expect(mockLogKeyValue).toHaveBeenCalledWith("发布文件名", "mini-claude-code-darwin-arm64");
+    expect(mockLogKeyValue).toHaveBeenCalledWith(
+      "可执行文件",
+      "/tmp/out/mini-claude-code",
+    );
+    expect(mockLogKeyValue).toHaveBeenCalledWith(
+      "发布文件名",
+      "mini-claude-code-darwin-arm64",
+    );
   });
 });

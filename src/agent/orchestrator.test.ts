@@ -19,6 +19,18 @@ const fakeTools = vi.hoisted(() => {
       },
     },
     {
+      name: "glob_files",
+      description: "查找文件",
+      inputSchema: {
+        type: "object",
+        properties: { pattern: { type: "string" } },
+        required: ["pattern"],
+      },
+      async execute(input: Record<string, unknown>) {
+        return `文件列表: ${input.pattern}`;
+      },
+    },
+    {
       name: "search_text",
       description: "搜索文本",
       inputSchema: {
@@ -49,10 +61,14 @@ const fakeTools = vi.hoisted(() => {
         properties: { path: { type: "string" }, content: { type: "string" } },
         required: ["path", "content"],
       },
-      async execute() {
+      async execute(input: Record<string, unknown>) {
         return {
           message: "已写入",
-          diff: { path: "test.ts", summary: "写入", diff: "+new content" },
+          diff: {
+            path: String(input.path || "test.ts"),
+            summary: "写入",
+            diff: "+new content",
+          },
         };
       },
     },
@@ -103,7 +119,89 @@ vi.mock("../tools/index.js", () => ({
     new Map(fakeTools.map((t: { name: string }) => [t.name, t])),
 }));
 
-import { AgentOrchestrator } from "./orchestrator.js";
+import { AgentOrchestrator, mergeParallelToolResults } from "./orchestrator.js";
+
+describe("mergeParallelToolResults", () => {
+  it("聚合并行结果时保留修改状态并提升自动修复轮数", () => {
+    const merged = mergeParallelToolResults(
+      {
+        hasModifiedFiles: false,
+        hasValidated: false,
+        autoFixRounds: 0,
+      },
+      [
+        {
+          status: "fulfilled",
+          value: {
+            message: "已写入",
+            hasModifiedFiles: true,
+            hasValidated: false,
+            autoFixRounds: 0,
+          },
+        },
+        {
+          status: "fulfilled",
+          value: {
+            message: "读取完成",
+            hasModifiedFiles: false,
+            hasValidated: false,
+            autoFixRounds: 0,
+          },
+        },
+        {
+          status: "fulfilled",
+          value: {
+            message: "验证失败",
+            hasModifiedFiles: false,
+            hasValidated: false,
+            autoFixRounds: 2,
+            pendingFixPrompt: "请修复",
+          },
+        },
+      ],
+    );
+
+    expect(merged.hasModifiedFiles).toBe(true);
+    expect(merged.hasValidated).toBe(false);
+    expect(merged.autoFixRounds).toBe(2);
+    expect(merged.pendingFixPrompt).toBe("请修复");
+  });
+
+  it("聚合纯验证型并行结果时保留已验证状态", () => {
+    const merged = mergeParallelToolResults(
+      {
+        hasModifiedFiles: false,
+        hasValidated: false,
+        autoFixRounds: 0,
+      },
+      [
+        {
+          status: "fulfilled",
+          value: {
+            message: "验证通过",
+            hasModifiedFiles: false,
+            hasValidated: true,
+            autoFixRounds: 0,
+          },
+        },
+        {
+          status: "fulfilled",
+          value: {
+            message: "读取完成",
+            hasModifiedFiles: false,
+            hasValidated: false,
+            autoFixRounds: 0,
+          },
+        },
+      ],
+    );
+
+    expect(merged.hasModifiedFiles).toBe(false);
+    expect(merged.hasValidated).toBe(true);
+    expect(merged.autoFixRounds).toBe(0);
+    expect(merged.pendingFixPrompt).toBeUndefined();
+  });
+});
 
 describe("AgentOrchestrator", () => {
   beforeEach(() => {
@@ -162,26 +260,60 @@ describe("AgentOrchestrator", () => {
     expect(result.steps.some((s) => s.includes("read_file"))).toBe(true);
   });
 
-  it("分析项目结构任务时会注入 project_map 提示", async () => {
-    mockChatStream.mockImplementationOnce(async (msgs: Array<{ role: string; content?: string | null }>) => {
-      expect(msgs.some((msg) => msg.content?.includes("优先考虑先调用 project_map"))).toBe(true);
-      return {
-        text: "",
-        toolCalls: [
-          {
-            id: "call-1",
-            name: "project_map",
-            argumentsText: '{"path":"src"}',
-          },
-        ],
-      };
+  it("plan 模式只提供只读工具并返回计划", async () => {
+    mockChatStream.mockImplementationOnce(async (_msgs, providedTools) => {
+      const toolNames = (providedTools as Array<{ name: string }>).map(
+        (tool) => tool.name,
+      );
+      expect(toolNames).toContain("read_file");
+      expect(toolNames).toContain("glob_files");
+      expect(toolNames).toContain("search_text");
+      expect(toolNames).not.toContain("write_file");
+      expect(toolNames).not.toContain("run_command");
+      return { text: "计划：先读文件，再修改。", toolCalls: [] };
     });
-    mockChatStream.mockResolvedValueOnce({ text: "项目结构如下。", toolCalls: [] });
+
+    const agent = new AgentOrchestrator();
+    const result = await agent.plan("修复问题");
+
+    expect(result.finalText).toContain("计划");
+    expect(result.diffs).toEqual([]);
+    expect(result.steps[0]).toContain("计划模式");
+  });
+
+  it("分析项目结构任务时会注入 project_map 提示", async () => {
+    mockChatStream.mockImplementationOnce(
+      async (msgs: Array<{ role: string; content?: string | null }>) => {
+        expect(
+          msgs.some((msg) =>
+            msg.content?.includes("优先考虑先调用 project_map"),
+          ),
+        ).toBe(true);
+        return {
+          text: "",
+          toolCalls: [
+            {
+              id: "call-1",
+              name: "project_map",
+              argumentsText: '{"path":"src"}',
+            },
+          ],
+        };
+      },
+    );
+    mockChatStream.mockResolvedValueOnce({
+      text: "项目结构如下。",
+      toolCalls: [],
+    });
 
     const agent = new AgentOrchestrator();
     const result = await agent.run("分析这个项目的结构和入口");
-    expect(result.steps).toContain("已提示模型优先使用 project_map 理解项目结构");
-    expect(result.steps.some((step) => step.includes("project_map"))).toBe(true);
+    expect(result.steps).toContain(
+      "已提示模型优先使用 project_map 理解项目结构",
+    );
+    expect(result.steps.some((step) => step.includes("project_map"))).toBe(
+      true,
+    );
     expect(result.finalText).toContain("项目结构如下");
   });
 
@@ -237,8 +369,8 @@ describe("AgentOrchestrator", () => {
               },
               {
                 id: "call-2",
-                name: "read_file",
-                argumentsText: '{"path":"b.ts"}',
+                name: "glob_files",
+                argumentsText: '{"pattern":"**/*.ts"}',
               },
             ],
           };
@@ -248,9 +380,124 @@ describe("AgentOrchestrator", () => {
     );
 
     const agent = new AgentOrchestrator();
-    const result = await agent.run("读取 a.ts 和 b.ts");
+    const result = await agent.run("读取 a.ts 并查找 TS 文件");
     expect(result.finalText).toContain("读完了");
-    expect(result.steps.filter((s) => s.includes("read_file")).length).toBe(2);
+    expect(result.steps.some((s) => s.includes("read_file"))).toBe(true);
+    expect(result.steps.some((s) => s.includes("glob_files"))).toBe(true);
+  });
+
+  it("并行工具调用后不会丢失文件已修改状态", async () => {
+    let callCount = 0;
+    mockChatStream.mockImplementation(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          text: "",
+          toolCalls: [
+            {
+              id: "call-1",
+              name: "read_file",
+              argumentsText: '{"path":"a.ts"}',
+            },
+            {
+              id: "call-2",
+              name: "read_file",
+              argumentsText: '{"path":"b.ts"}',
+            },
+          ],
+        };
+      }
+      if (callCount === 2) {
+        return {
+          text: "",
+          toolCalls: [
+            {
+              id: "call-3",
+              name: "write_file",
+              argumentsText: '{"path":"src/foo.ts","content":"updated"}',
+            },
+            {
+              id: "call-4",
+              name: "read_file",
+              argumentsText: '{"path":"src/foo.ts"}',
+            },
+          ],
+        };
+      }
+      if (callCount === 3) {
+        return { text: "", toolCalls: [] };
+      }
+      return { text: "修改后已完成验证。", toolCalls: [] };
+    });
+
+    const runAutoValidationSpy = vi
+      .spyOn(validationModule, "getValidationPlan")
+      .mockResolvedValue({
+        commands: ["npm run build"],
+        reason: "检测到源码变更，执行 build 验证",
+        steps: [
+          {
+            kind: "build",
+            command: "npm run build",
+            targeted: false,
+          },
+        ],
+      });
+
+    const agent = new AgentOrchestrator({
+      onConfirmCommand: vi.fn().mockResolvedValue(true),
+    });
+    const result = await agent.run("先读文件，再并行修改并验证");
+
+    expect(runAutoValidationSpy).toHaveBeenCalledTimes(1);
+    expect(result.finalText).toContain("修改后已完成验证");
+  });
+
+  it("支持连续撤销多轮修改", async () => {
+    let callCount = 0;
+    mockChatStream.mockImplementation(async () => {
+      callCount += 1;
+      if (callCount === 1 || callCount === 4) {
+        return {
+          text: "",
+          toolCalls: [
+            {
+              id: `call-${callCount}`,
+              name: "write_file",
+              argumentsText: `{"path":"src/file${callCount}.ts","content":"updated"}`,
+            },
+          ],
+        };
+      }
+      return { text: "完成。", toolCalls: [] };
+    });
+
+    vi.spyOn(validationModule, "getValidationPlan").mockResolvedValue({
+      commands: ["npm run build"],
+      reason: "测试中验证",
+      steps: [
+        {
+          kind: "build",
+          command: "npm run build",
+          targeted: false,
+        },
+      ],
+    });
+
+    const agent = new AgentOrchestrator();
+    await agent.run("第一次修改");
+    await agent.run("第二次修改");
+
+    expect(agent.undoStackDepth).toBe(2);
+    expect(agent.canUndoLastRun).toBe(true);
+
+    const firstUndo = await agent.undoLastRun();
+    expect(firstUndo.finalText).toContain("src/file4.ts");
+    expect(agent.undoStackDepth).toBe(1);
+
+    const secondUndo = await agent.undoLastRun();
+    expect(secondUndo.finalText).toContain("src/file1.ts");
+    expect(agent.undoStackDepth).toBe(0);
   });
 
   it("达到最大执行轮数时返回预算提示", async () => {
@@ -304,7 +551,8 @@ describe("AgentOrchestrator", () => {
   it("定向测试参数不受支持时会回退到完整测试", async () => {
     vi.spyOn(validationModule, "getValidationPlan").mockResolvedValue({
       commands: ["npm run test -- src/foo.test.ts"],
-      reason: "仅检测到测试相关变更，执行 lint/test 验证；检测到测试文件改动，优先运行受影响测试文件",
+      reason:
+        "仅检测到测试相关变更，执行 lint/test 验证；检测到测试文件改动，优先运行受影响测试文件",
       steps: [
         {
           kind: "test",
@@ -374,9 +622,9 @@ describe("AgentOrchestrator", () => {
       command: "npm run test",
       confirmed: true,
     });
-    expect(
-      result.steps.some((step) => step.includes("回退到完整测试")),
-    ).toBe(true);
+    expect(result.steps.some((step) => step.includes("回退到完整测试"))).toBe(
+      true,
+    );
     expect(result.finalText).toContain("完成");
   });
 

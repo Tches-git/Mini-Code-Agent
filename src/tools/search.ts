@@ -1,14 +1,16 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import ts from "typescript";
 import { execa } from "execa";
+import ts from "typescript";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
 import { getWorkspaceRoot } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
 const MAX_MATCHES = 50;
+const MAX_GLOB_FILES = 100;
 const MAX_PROJECT_MAP_FILES = 40;
+const MAX_PROJECT_MAP_SCAN_FILES = 160;
 const DEFAULT_PROJECT_MAP_EXTENSIONS = [
   ".ts",
   ".tsx",
@@ -36,8 +38,36 @@ type SearchMatch = {
   path: string;
   line: number;
   text: string;
+  query?: string;
   contextBefore?: string[];
   contextAfter?: string[];
+};
+
+type SearchResultMatch = {
+  path: string;
+  text: string;
+  line?: number;
+  query?: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+};
+
+type SearchResultFile = {
+  path: string;
+  matchCount: number;
+  matches: SearchResultMatch[];
+};
+
+type SearchTextResult = {
+  queries: string[];
+  totalMatches: number;
+  returnedMatches: number;
+  resultOffset: number;
+  truncated: boolean;
+  maxResults: number;
+  nextOffset?: number;
+  matches?: SearchResultMatch[];
+  files?: SearchResultFile[];
 };
 
 type SearchFilters = {
@@ -46,6 +76,24 @@ type SearchFilters = {
   excludeGlobs: string[];
   contextLines: number;
   maxResults: number;
+};
+
+type GlobFilesOptions = {
+  pattern: string;
+  path?: string;
+  extensions?: string[];
+  excludeGlobs?: string[];
+  maxResults?: number;
+  confirmed?: boolean;
+};
+
+type TextSearchOptions = {
+  regex?: boolean;
+  caseSensitive?: boolean;
+  includeLineNumbers?: boolean;
+  groupByFile?: boolean;
+  matchMode?: "any" | "all";
+  resultOffset?: number;
 };
 
 type ProjectMapRole = "entry" | "core" | "leaf" | "module";
@@ -65,6 +113,11 @@ type ProjectMapEntry = {
   references: ProjectMapReference[];
   role: ProjectMapRole;
   score: number;
+};
+
+type ProjectMapBuildOptions = {
+  maxFiles?: number;
+  scanLimit?: number;
 };
 
 function shouldSkipEntry(entryName: string): boolean {
@@ -247,6 +300,26 @@ function buildContext(
   };
 }
 
+function compileSearchRegex(query: string, caseSensitive?: boolean): RegExp {
+  try {
+    return new RegExp(query, caseSensitive ? "" : "i");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`无效正则表达式 "${query}": ${detail}`);
+  }
+}
+
+function getSearchLineMatcher(query: string, options: TextSearchOptions = {}) {
+  if (!options.regex) {
+    const needle = options.caseSensitive ? query : query.toLowerCase();
+    return (line: string) =>
+      (options.caseSensitive ? line : line.toLowerCase()).includes(needle);
+  }
+
+  const regex = compileSearchRegex(query, options.caseSensitive);
+  return (line: string) => regex.test(line);
+}
+
 function scoreMatch(match: SearchMatch, query: string): number {
   const lowerQuery = query.toLowerCase();
   const lowerText = match.text.toLowerCase();
@@ -282,20 +355,57 @@ function sortMatches(matches: SearchMatch[], query: string): SearchMatch[] {
   });
 }
 
+function normalizeGlobMaxResults(maxResults?: number): number {
+  return Number.isFinite(maxResults)
+    ? Math.max(1, Math.min(500, maxResults || MAX_GLOB_FILES))
+    : MAX_GLOB_FILES;
+}
+
+async function globFiles(options: GlobFilesOptions): Promise<string[]> {
+  const resolved = resolveSearchRoot(options.path || ".", options.confirmed);
+  const maxResults = normalizeGlobMaxResults(options.maxResults);
+  const filters = normalizeSearchFilters({
+    extensions: options.extensions,
+    includeGlobs: [options.pattern],
+    excludeGlobs: options.excludeGlobs,
+    maxResults,
+  });
+  const files = await walk(resolved.fullPath, filters, resolved.fullPath, [], {
+    limit: maxResults,
+  });
+
+  return files.map((file) => toDisplayPath(resolved.fullPath, file)).sort();
+}
+
 async function walk(
   dir: string,
   filters: SearchFilters,
   baseDir: string,
   result: string[] = [],
+  options?: { limit?: number },
 ): Promise<string[]> {
+  if (options?.limit && result.length >= options.limit) {
+    return result;
+  }
+
   const entries = await fs.readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
+  const sortedEntries = [...entries].sort((a, b) => {
+    const aDirRank = a.isDirectory() ? 1 : 0;
+    const bDirRank = b.isDirectory() ? 1 : 0;
+    return aDirRank - bDirRank || a.name.localeCompare(b.name);
+  });
+
+  for (const entry of sortedEntries) {
     if (shouldSkipEntry(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      await walk(full, filters, baseDir, result);
+      await walk(full, filters, baseDir, result, options);
     } else if (matchesSearchFilters(toDisplayPath(baseDir, full), filters)) {
       result.push(full);
+    }
+
+    if (options?.limit && result.length >= options.limit) {
+      break;
     }
   }
   return result;
@@ -349,15 +459,20 @@ async function searchWithRipgrep(
   query: string,
   searchRoot: string,
   filters: SearchFilters,
+  options: TextSearchOptions = {},
 ): Promise<SearchMatch[]> {
+  if (options.regex) {
+    compileSearchRegex(query, options.caseSensitive);
+  }
+
   try {
     const result = await execa(
       "rg",
       [
         "--json",
         "--line-number",
-        "--fixed-strings",
-        "--ignore-case",
+        ...(options.regex ? [] : ["--fixed-strings"]),
+        ...(options.caseSensitive ? [] : ["--ignore-case"]),
         "--glob",
         "!node_modules/**",
         "--glob",
@@ -385,13 +500,18 @@ async function searchWithRipgrep(
       result.exitCode ??
       (typeof result.code === "number" ? result.code : undefined);
     if (exitCode !== 0 && exitCode !== 1) {
+      if (options.regex) {
+        throw new Error(
+          `无效正则表达式 "${query}": ${result.stderr || `rg 退出码: ${result.exitCode}`}`,
+        );
+      }
       throw new Error(result.stderr || `rg 退出码: ${result.exitCode}`);
     }
 
     return sortMatches(
-      parseRipgrepOutput(result.stdout, searchRoot, filters)
-        .filter((match) => match.path && match.line > 0)
-        .slice(0, filters.maxResults),
+      parseRipgrepOutput(result.stdout, searchRoot, filters).filter(
+        (match) => match.path && match.line > 0,
+      ),
       query,
     );
   } catch (error) {
@@ -407,8 +527,9 @@ async function searchWithFallback(
   query: string,
   searchRoot: string,
   filters: SearchFilters,
+  options: TextSearchOptions = {},
 ): Promise<SearchMatch[]> {
-  const lowerQuery = query.toLowerCase();
+  const matchesLine = getSearchLineMatcher(query, options);
   const files = await walk(searchRoot, filters, searchRoot);
   const matches: SearchMatch[] = [];
 
@@ -417,7 +538,7 @@ async function searchWithFallback(
       const content = await fs.readFile(file, "utf8");
       const lines = content.split("\n");
       lines.forEach((line, index) => {
-        if (line.toLowerCase().includes(lowerQuery)) {
+        if (matchesLine(line)) {
           const context = buildContext(lines, index + 1, filters.contextLines);
           matches.push({
             path: toDisplayPath(searchRoot, file),
@@ -428,14 +549,107 @@ async function searchWithFallback(
           });
         }
       });
-    } catch {
-      continue;
-    }
-
-    if (matches.length >= filters.maxResults) break;
+    } catch {}
   }
 
-  return sortMatches(matches.slice(0, filters.maxResults), query);
+  return sortMatches(matches, query);
+}
+
+function uniqueSearchQueries(query: string, queries?: string[]): string[] {
+  return Array.from(
+    new Set(
+      [query, ...(queries || [])].map((item) => item.trim()).filter(Boolean),
+    ),
+  );
+}
+
+function dedupeSearchMatches(matches: SearchMatch[]): SearchMatch[] {
+  const seen = new Set<string>();
+  return matches.filter((match) => {
+    const key = `${match.path}\0${match.line}\0${match.text}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function filterMatchesByMode(
+  matches: SearchMatch[],
+  queries: string[],
+  mode: "any" | "all" = "any",
+): SearchMatch[] {
+  if (mode !== "all" || queries.length <= 1) return matches;
+  const matchedQueriesByLocation = new Map<string, Set<string>>();
+  for (const match of matches) {
+    const key = `${match.path}\0${match.line}`;
+    const querySet = matchedQueriesByLocation.get(key) || new Set<string>();
+    if (match.query) querySet.add(match.query);
+    matchedQueriesByLocation.set(key, querySet);
+  }
+  return matches.filter((match) => {
+    const querySet = matchedQueriesByLocation.get(
+      `${match.path}\0${match.line}`,
+    );
+    return queries.every((query) => querySet?.has(query));
+  });
+}
+
+function formatSearchTextResult(
+  matches: SearchMatch[],
+  queries: string[],
+  filters: SearchFilters,
+  options: TextSearchOptions = {},
+  totalMatches = matches.length,
+): SearchTextResult {
+  const resultOffset = Math.max(0, options.resultOffset || 0);
+  const returnedMatches = matches.slice(
+    resultOffset,
+    resultOffset + filters.maxResults,
+  );
+  const toResultMatch = (match: SearchMatch): SearchResultMatch => {
+    const result: SearchResultMatch = {
+      path: match.path,
+      text: match.text,
+      query: match.query,
+      contextBefore: match.contextBefore,
+      contextAfter: match.contextAfter,
+    };
+    if (options.includeLineNumbers !== false) {
+      result.line = match.line;
+    }
+    if (queries.length <= 1) {
+      delete result.query;
+    }
+    return result;
+  };
+  const nextOffset = resultOffset + returnedMatches.length;
+  const result: SearchTextResult = {
+    queries,
+    totalMatches,
+    returnedMatches: returnedMatches.length,
+    resultOffset,
+    truncated: totalMatches > nextOffset,
+    maxResults: filters.maxResults,
+    nextOffset: totalMatches > nextOffset ? nextOffset : undefined,
+  };
+
+  if (!options.groupByFile) {
+    result.matches = returnedMatches.map(toResultMatch);
+    return result;
+  }
+
+  const files = new Map<string, SearchResultMatch[]>();
+  for (const match of returnedMatches) {
+    const bucket = files.get(match.path) || [];
+    bucket.push(toResultMatch(match));
+    files.set(match.path, bucket);
+  }
+  result.files = Array.from(files.entries()).map(([filePath, fileMatches]) => ({
+    path: filePath,
+    matchCount: fileMatches.length,
+    matches: fileMatches,
+  }));
+  return result;
 }
 
 async function enrichMatchesWithContext(
@@ -524,10 +738,13 @@ function extractTopLevelSymbolsWithAst(
   };
 
   const hasExportModifier = (node: ts.Node) => {
-    const maybeModifiers = (node as { modifiers?: ts.NodeArray<ts.ModifierLike> }).modifiers;
+    const maybeModifiers = (
+      node as { modifiers?: ts.NodeArray<ts.ModifierLike> }
+    ).modifiers;
     return Boolean(
       maybeModifiers?.some(
-        (modifier: ts.ModifierLike) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        (modifier: ts.ModifierLike) =>
+          modifier.kind === ts.SyntaxKind.ExportKeyword,
       ),
     );
   };
@@ -575,7 +792,10 @@ function extractTopLevelSymbolsWithAst(
   return Array.from(symbols);
 }
 
-function extractTopLevelSymbols(content: string, filePath = "file.ts"): string[] {
+function extractTopLevelSymbols(
+  content: string,
+  filePath = "file.ts",
+): string[] {
   if (getScriptKind(filePath) !== ts.ScriptKind.Unknown) {
     const astSymbols = extractTopLevelSymbolsWithAst(content, filePath);
     if (astSymbols.length > 0) {
@@ -603,7 +823,10 @@ function extractTopLevelSymbols(content: string, filePath = "file.ts"): string[]
   return Array.from(symbols);
 }
 
-function parseSourceFile(content: string, filePath = "file.ts"): ts.SourceFile | null {
+function parseSourceFile(
+  content: string,
+  filePath = "file.ts",
+): ts.SourceFile | null {
   const scriptKind = getScriptKind(filePath);
   if (scriptKind === ts.ScriptKind.Unknown) {
     return null;
@@ -659,7 +882,9 @@ function extractImportedSymbolsWithAst(
 
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement)) {
-      const specifier = statement.moduleSpecifier.getText(sourceFile).slice(1, -1);
+      const specifier = statement.moduleSpecifier
+        .getText(sourceFile)
+        .slice(1, -1);
       if (!specifier.startsWith(".")) continue;
       const symbols: string[] = [];
       const clause = statement.importClause;
@@ -673,7 +898,9 @@ function extractImportedSymbolsWithAst(
       }
       imports.push({ specifier, symbols });
     } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
-      const specifier = statement.moduleSpecifier.getText(sourceFile).slice(1, -1);
+      const specifier = statement.moduleSpecifier
+        .getText(sourceFile)
+        .slice(1, -1);
       if (!specifier.startsWith(".")) continue;
       const symbols: string[] = [];
       if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
@@ -717,10 +944,7 @@ function extractExternalDependenciesWithAst(
   return Array.from(dependencies).sort();
 }
 
-function resolveProjectRelation(
-  fromPath: string,
-  relation: string,
-): string {
+function resolveProjectRelation(fromPath: string, relation: string): string {
   const baseDir = path.posix.dirname(fromPath);
   return path.posix.normalize(path.posix.join(baseDir, relation));
 }
@@ -775,6 +999,16 @@ function scoreProjectMapEntry(
   let score = Math.max(1, 12 - normalizedPath.split("/").length);
   if (/\/index\.[^.]+$/.test(normalizedPath)) score += 3;
   if (/\/(cli|agent|tools|llm)\//.test(normalizedPath)) score += 2;
+  if (
+    /\/(package|tsconfig|vite|vitest|jest|eslint|biome|webpack|rollup|babel)(\.|$)/.test(
+      normalizedPath,
+    )
+  ) {
+    score += 3;
+  }
+  if (/\/(index|main|app|server|client|cli)\.[^.]+$/.test(normalizedPath)) {
+    score += 2;
+  }
   if (symbols.length > 0) score += Math.min(6, symbols.length);
   if (relations.length > 0) score += Math.min(4, relations.length);
   if (importedBy.length > 0) score += Math.min(4, importedBy.length);
@@ -788,14 +1022,24 @@ function scoreProjectMapEntry(
 async function buildProjectMap(
   targetPath: string,
   confirmed = false,
-  maxFiles = MAX_PROJECT_MAP_FILES,
+  options?: number | ProjectMapBuildOptions,
 ): Promise<ProjectMapEntry[]> {
+  const maxFiles =
+    typeof options === "number"
+      ? options
+      : options?.maxFiles || MAX_PROJECT_MAP_FILES;
+  const scanLimit =
+    typeof options === "number"
+      ? Math.max(maxFiles, MAX_PROJECT_MAP_SCAN_FILES)
+      : Math.max(maxFiles, options?.scanLimit || MAX_PROJECT_MAP_SCAN_FILES);
   const resolved = resolveSearchRoot(targetPath, confirmed);
   const filters = normalizeSearchFilters({
     extensions: DEFAULT_PROJECT_MAP_EXTENSIONS,
-    maxResults: maxFiles,
+    maxResults: scanLimit,
   });
-  const files = await walk(resolved.fullPath, filters, resolved.fullPath);
+  const files = await walk(resolved.fullPath, filters, resolved.fullPath, [], {
+    limit: scanLimit,
+  });
   const entries: ProjectMapEntry[] = [];
 
   for (const file of files) {
@@ -815,9 +1059,7 @@ async function buildProjectMap(
         role: "module",
         score: 0,
       });
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 
   const pathSet = new Set(entries.map((entry) => entry.path));
@@ -839,9 +1081,14 @@ async function buildProjectMap(
       const content = await fs.readFile(absolutePath, "utf8");
       const imports = extractImportedSymbolsWithAst(content, absolutePath);
       for (const imported of imports) {
-        const candidate = resolveCandidatePath(pathSet, entry.path, imported.specifier);
+        const candidate = resolveCandidatePath(
+          pathSet,
+          entry.path,
+          imported.specifier,
+        );
         if (!candidate) continue;
-        const symbolMap = referenceMap.get(candidate) || new Map<string, Set<string>>();
+        const symbolMap =
+          referenceMap.get(candidate) || new Map<string, Set<string>>();
         for (const symbol of imported.symbols) {
           const files = symbolMap.get(symbol) || new Set<string>();
           files.add(entry.path);
@@ -849,9 +1096,7 @@ async function buildProjectMap(
         }
         referenceMap.set(candidate, symbolMap);
       }
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 
   for (const entry of entries) {
@@ -864,7 +1109,11 @@ async function buildProjectMap(
         importedBy: Array.from(files).sort(),
       }))
       .sort((a, b) => a.symbol.localeCompare(b.symbol));
-    entry.role = getProjectMapRole(entry.path, entry.relations, entry.importedBy);
+    entry.role = getProjectMapRole(
+      entry.path,
+      entry.relations,
+      entry.importedBy,
+    );
     entry.score = scoreProjectMapEntry(
       entry.path,
       entry.symbols,
@@ -884,14 +1133,17 @@ export type { ProjectMapEntry, SearchFilters, SearchMatch };
 export {
   buildContext,
   buildProjectMap,
+  dedupeSearchMatches,
   extractExternalDependenciesWithAst,
   extractImportedSymbolsWithAst,
   extractRelationsWithAst,
   extractTopLevelSymbols,
   extractTopLevelSymbolsWithAst,
+  filterMatchesByMode,
+  formatSearchTextResult,
   getProjectMapRole,
-  resolveCandidatePath,
-  resolveProjectRelation,
+  getSearchLineMatcher,
+  globFiles,
   globToRegExp,
   matchesGlobPattern,
   matchesSearchFilters,
@@ -899,6 +1151,8 @@ export {
   normalizeGlob,
   normalizeSearchFilters,
   parseRipgrepOutput,
+  resolveCandidatePath,
+  resolveProjectRelation,
   scoreMatch,
   scoreProjectMapEntry,
   shouldSkipEntry,
@@ -907,16 +1161,73 @@ export {
 
 export const searchTools: ToolDefinition[] = [
   createTool({
+    name: "glob_files",
+    description:
+      "按 glob 模式查找文件路径；适合先定位文件，再用 read_file 或 search_text 深入查看；可限定工作区内或确认后的工作区外目录范围",
+    schema: z.object({
+      pattern: z.string().min(1, "glob 模式不能为空"),
+      path: z.string().optional(),
+      extensions: z.array(z.string()).optional(),
+      excludeGlobs: z.array(z.string()).optional(),
+      maxResults: z.number().int().min(1).max(500).optional(),
+      confirmed: z.boolean().optional(),
+    }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description:
+            "glob 模式，如 '**/*.ts'、'src/**/*.test.ts' 或 'package.json'",
+        },
+        path: {
+          type: "string",
+          description: "可选，限定查找目录，默认当前工作区",
+        },
+        extensions: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选，只返回指定后缀，如 ['ts', '.md']",
+        },
+        excludeGlobs: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选，排除匹配这些 glob 的文件，如 ['**/*.test.ts']",
+        },
+        maxResults: {
+          type: "number",
+          description: "可选，最多返回多少个文件，范围 1-500",
+        },
+        confirmed: {
+          type: "boolean",
+          description: "仅当用户已明确确认查找工作区外目录时才传 true",
+        },
+      },
+      required: ["pattern"],
+    },
+    async execute(input) {
+      const files = await globFiles(input);
+      return JSON.stringify(files, null, 2);
+    },
+  }),
+  createTool({
     name: "search_text",
     description:
-      "在文本文件中搜索关键词；可指定工作区内或确认后的工作区外目录范围，并支持文件类型、glob 过滤、上下文和结果数限制",
+      "在文本文件中搜索关键词；可指定工作区内或确认后的工作区外目录范围，并支持多关键词、文件类型、glob 过滤、上下文、分组和结果数限制",
     schema: z.object({
       query: z.string().min(1, "搜索关键词不能为空"),
+      queries: z.array(z.string().min(1)).optional(),
       path: z.string().optional(),
       extensions: z.array(z.string()).optional(),
       includeGlobs: z.array(z.string()).optional(),
       excludeGlobs: z.array(z.string()).optional(),
       contextLines: z.number().int().min(0).max(5).optional(),
+      regex: z.boolean().optional(),
+      caseSensitive: z.boolean().optional(),
+      includeLineNumbers: z.boolean().optional(),
+      groupByFile: z.boolean().optional(),
+      matchMode: z.enum(["any", "all"]).optional(),
+      resultOffset: z.number().int().min(0).optional(),
       maxResults: z.number().int().min(1).max(200).optional(),
       confirmed: z.boolean().optional(),
     }),
@@ -924,6 +1235,11 @@ export const searchTools: ToolDefinition[] = [
       type: "object",
       properties: {
         query: { type: "string" },
+        queries: {
+          type: "array",
+          items: { type: "string" },
+          description: "可选，额外搜索关键词；会与 query 合并去重",
+        },
         path: {
           type: "string",
           description: "可选，限定搜索目录，默认当前工作区",
@@ -948,6 +1264,34 @@ export const searchTools: ToolDefinition[] = [
           type: "number",
           description: "可选，每条命中前后额外返回多少行上下文，范围 0-5",
         },
+        regex: {
+          type: "boolean",
+          description:
+            "可选，true 时把 query 当正则表达式搜索；默认 false（固定字符串）",
+        },
+        caseSensitive: {
+          type: "boolean",
+          description: "可选，是否区分大小写；默认 false",
+        },
+        includeLineNumbers: {
+          type: "boolean",
+          description: "可选，是否在结果中包含行号；默认 true",
+        },
+        groupByFile: {
+          type: "boolean",
+          description: "可选，是否按文件聚合返回命中；默认 false",
+        },
+        matchMode: {
+          type: "string",
+          enum: ["any", "all"],
+          description:
+            "可选，多 query 时 any=任一关键词命中，all=同一行需命中所有关键词；默认 any",
+        },
+        resultOffset: {
+          type: "number",
+          description:
+            "可选，搜索结果分页偏移（0-based），配合 maxResults 读取后续页",
+        },
         maxResults: {
           type: "number",
           description: "可选，最多返回多少条命中，范围 1-200",
@@ -968,21 +1312,59 @@ export const searchTools: ToolDefinition[] = [
         contextLines: input.contextLines,
         maxResults: input.maxResults,
       });
-      const rgMatches = await searchWithRipgrep(
+      const searchOptions = {
+        regex: input.regex,
+        caseSensitive: input.caseSensitive,
+        includeLineNumbers: input.includeLineNumbers,
+        groupByFile: input.groupByFile,
+        matchMode: input.matchMode,
+        resultOffset: input.resultOffset,
+      };
+      const queries = uniqueSearchQueries(input.query, input.queries);
+      const allMatches: SearchMatch[] = [];
+      for (const query of queries) {
+        const rgMatches = await searchWithRipgrep(
+          query,
+          resolved.fullPath,
+          filters,
+          searchOptions,
+        );
+        const matches =
+          rgMatches.length > 0
+            ? rgMatches
+            : await searchWithFallback(
+                query,
+                resolved.fullPath,
+                filters,
+                searchOptions,
+              );
+        allMatches.push(...matches.map((match) => ({ ...match, query })));
+      }
+      const sortedMatches = sortMatches(
+        filterMatchesByMode(
+          dedupeSearchMatches(allMatches),
+          queries,
+          searchOptions.matchMode,
+        ),
         input.query,
-        resolved.fullPath,
-        filters,
       );
-      const matches =
-        rgMatches.length > 0
-          ? rgMatches
-          : await searchWithFallback(input.query, resolved.fullPath, filters);
+      const resultOffset = Math.max(0, input.resultOffset || 0);
       const enrichedMatches = await enrichMatchesWithContext(
-        matches,
+        sortedMatches.slice(resultOffset, resultOffset + filters.maxResults),
         resolved.fullPath,
         filters.contextLines,
       );
-      return JSON.stringify(enrichedMatches, null, 2);
+      return JSON.stringify(
+        formatSearchTextResult(
+          enrichedMatches,
+          queries,
+          filters,
+          searchOptions,
+          sortedMatches.length,
+        ),
+        null,
+        2,
+      );
     },
   }),
   createTool({

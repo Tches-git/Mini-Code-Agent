@@ -34,7 +34,11 @@ export function analyzeTaskIntent(userTask: string) {
 
 export function shouldPreferProjectMap(userTask: string): boolean {
   const intent = analyzeTaskIntent(userTask);
-  return !intent.hasWriteIntent && intent.hasAnalysisIntent && intent.mentionsProjectScope;
+  return (
+    !intent.hasWriteIntent &&
+    intent.hasAnalysisIntent &&
+    intent.mentionsProjectScope
+  );
 }
 
 export function getExecutionBudget(userTask: string): {

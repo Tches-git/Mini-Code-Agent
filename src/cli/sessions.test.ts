@@ -8,7 +8,11 @@ vi.mock("../agent/session.js", () => ({
   loadSession: mockLoadSession,
 }));
 
-import { printSessionDetail, printSessions } from "./sessions.js";
+import {
+  matchesSessionQuery,
+  printSessionDetail,
+  printSessions,
+} from "./sessions.js";
 
 describe("sessions cli output", () => {
   beforeEach(() => {
@@ -51,15 +55,21 @@ describe("sessions cli output", () => {
       createdAt: "2026-04-20T08:00:00.000Z",
       updatedAt: "2026-04-20T09:00:00.000Z",
       turnCount: 4,
+      version: 1,
       messages: [],
       summaryLines: [],
-      summaryFocus: { files: [], keywords: [] },
+      summaryFocus: {
+        files: ["src/agent/session.ts"],
+        keywords: ["session", "restore"],
+      },
     });
 
     await printSessionDetail("session-9");
 
     const calls = vi.mocked(console.log).mock.calls.flat().join("\n");
     expect(calls).toContain("会话详情");
+    expect(calls).toContain("焦点文件");
+    expect(calls).toContain("焦点关键词");
     expect(calls).toContain("最新用户消息");
     expect(calls).toContain("最新提问");
     expect(calls).not.toContain("###");
@@ -84,6 +94,7 @@ describe("sessions cli output", () => {
       createdAt: "2026-04-20T08:00:00.000Z",
       updatedAt: "2026-04-20T09:00:00.000Z",
       turnCount: 1,
+      version: 1,
       messages: [],
       summaryLines: [],
       summaryFocus: { files: [], keywords: [] },
@@ -94,6 +105,52 @@ describe("sessions cli output", () => {
     const payload = vi.mocked(console.log).mock.calls[0]?.[0];
     expect(typeof payload).toBe("string");
     expect(String(payload)).toContain('"id": "session-json"');
+  });
+
+  it("matches session query across title summary and latest message", () => {
+    const session = {
+      id: "session-auth",
+      title: "实现登录",
+      summary: "修改 auth middleware",
+      latestUserMessage: "继续验证 token",
+      createdAt: "2026-04-20T08:00:00.000Z",
+      updatedAt: "2026-04-20T09:00:00.000Z",
+      turnCount: 3,
+    };
+
+    expect(matchesSessionQuery(session, "AUTH")).toBe(true);
+    expect(matchesSessionQuery(session, "token")).toBe(true);
+    expect(matchesSessionQuery(session, "missing")).toBe(false);
+  });
+
+  it("filters session lists by query", async () => {
+    mockListSessions.mockResolvedValue([
+      {
+        id: "s-auth",
+        title: "认证问题",
+        summary: "auth summary",
+        latestUserMessage: "修复 token",
+        createdAt: "2026-04-20T08:00:00.000Z",
+        updatedAt: "2026-04-20T09:00:00.000Z",
+        turnCount: 1,
+      },
+      {
+        id: "s-build",
+        title: "构建问题",
+        summary: "build summary",
+        latestUserMessage: "修复 tsc",
+        createdAt: "2026-04-20T10:00:00.000Z",
+        updatedAt: "2026-04-20T11:00:00.000Z",
+        turnCount: 2,
+      },
+    ]);
+
+    await printSessions({ query: "auth" });
+
+    const calls = vi.mocked(console.log).mock.calls.flat().join("\n");
+    expect(calls).toContain("s-auth");
+    expect(calls).not.toContain("s-build");
+    expect(calls).toContain("过滤");
   });
 
   it("supports paging and sorting session lists", async () => {

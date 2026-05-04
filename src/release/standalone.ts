@@ -28,7 +28,11 @@ type StandaloneBuildResult = {
 
 async function findEsbuildBinary(): Promise<string> {
   const candidates = [
-    path.resolve("node_modules", ".bin", process.platform === "win32" ? "esbuild.cmd" : "esbuild"),
+    path.resolve(
+      "node_modules",
+      ".bin",
+      process.platform === "win32" ? "esbuild.cmd" : "esbuild",
+    ),
     path.resolve("node_modules", "esbuild", "bin", "esbuild"),
   ];
 
@@ -43,14 +47,19 @@ async function findEsbuildBinary(): Promise<string> {
 }
 
 async function readPackageMetadata(): Promise<PackageJson> {
-  return JSON.parse(await readFile(path.resolve("package.json"), "utf8")) as PackageJson;
+  return JSON.parse(
+    await readFile(path.resolve("package.json"), "utf8"),
+  ) as PackageJson;
 }
 
 function getOutputPath(outputDir: string, executableName: string): string {
   return path.join(outputDir, `${executableName}${getExecutableExtension()}`);
 }
 
-async function buildJavaScriptBundle(tempDir: string, version: string): Promise<string> {
+async function buildJavaScriptBundle(
+  tempDir: string,
+  version: string,
+): Promise<string> {
   const bundlePath = path.join(tempDir, "cli-bundle.cjs");
   const esbuildBinary = await findEsbuildBinary();
   await execa(
@@ -62,7 +71,7 @@ async function buildJavaScriptBundle(tempDir: string, version: string): Promise<
       "--target=node22",
       "--format=cjs",
       `--outfile=${bundlePath}`,
-      `--banner:js=process.env.MINI_CLAUDE_CODE_STANDALONE=\"1\";process.env.MINI_CLAUDE_CODE_VERSION=${JSON.stringify(version)};`,
+      `--banner:js=process.env.MINI_CLAUDE_CODE_STANDALONE="1";process.env.MINI_CLAUDE_CODE_VERSION=${JSON.stringify(version)};`,
     ],
     { stdio: "inherit" },
   );
@@ -106,7 +115,9 @@ async function buildStandaloneBinary(configPath: string): Promise<void> {
       );
     }
     if (message.includes("import.meta") && message.includes("cjs")) {
-      throw new Error("standalone 打包失败：当前 bundle 仍依赖 import.meta，请先消除该运行时路径依赖。");
+      throw new Error(
+        "standalone 打包失败：当前 bundle 仍依赖 import.meta，请先消除该运行时路径依赖。",
+      );
     }
     throw error;
   }
@@ -124,7 +135,9 @@ export async function buildStandaloneExecutable(
   const executableName =
     options?.executableName || packageJson.name || DEFAULT_EXECUTABLE_NAME;
   const outputPath = getOutputPath(outputDir, executableName);
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "mini-claude-code-sea-"));
+  const tempDir = await mkdtemp(
+    path.join(os.tmpdir(), "mini-claude-code-sea-"),
+  );
   const artifactFileName = getPlatformArtifactFileName(executableName);
 
   try {

@@ -22,14 +22,18 @@ function parseTableRow(line: string): string[] | null {
 function isTableSeparatorLine(line: string): boolean {
   const cells = parseTableRow(line);
   return Boolean(
-    cells && cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell)),
+    cells &&
+      cells.length > 0 &&
+      cells.every((cell) => /^:?-{3,}:?$/.test(cell)),
   );
 }
 
 function renderTableAsCards(rows: string[][], indent: string): string[] {
   const [header, ...body] = rows;
   return body.flatMap((row, rowIndex) => {
-    const title = stripMarkdown(row[0] || `${header[0] || "条目"} ${rowIndex + 1}`) || `第 ${rowIndex + 1} 项`;
+    const title =
+      stripMarkdown(row[0] || `${header[0] || "条目"} ${rowIndex + 1}`) ||
+      `第 ${rowIndex + 1} 项`;
     const cardLines = [chalk.cyan(`${indent}┌─ ${title}`)];
 
     for (let index = 1; index < row.length; index++) {
@@ -61,11 +65,19 @@ function renderTable(rows: string[][], indent: string): string[] {
     columnCount,
     getTerminalWidth() - indent.length - (columnCount + 1) * 3,
   );
-  const minColumnWidth = Math.max(6, Math.floor(availableWidth / Math.max(columnCount, 1)));
-  const longestCell = Math.max(
-    ...normalizedRows.flatMap((row) => row.map((cell) => stripMarkdown(cell).length)),
+  const minColumnWidth = Math.max(
+    6,
+    Math.floor(availableWidth / Math.max(columnCount, 1)),
   );
-  if (columnCount >= 3 && (minColumnWidth < 24 || longestCell > minColumnWidth * 2)) {
+  const longestCell = Math.max(
+    ...normalizedRows.flatMap((row) =>
+      row.map((cell) => stripMarkdown(cell).length),
+    ),
+  );
+  if (
+    columnCount >= 3 &&
+    (minColumnWidth < 24 || longestCell > minColumnWidth * 2)
+  ) {
     return renderTableAsCards(normalizedRows, indent);
   }
 
@@ -74,7 +86,9 @@ function renderTable(rows: string[][], indent: string): string[] {
       1,
       Math.min(
         Math.max(
-          ...normalizedRows.map((row) => stripMarkdown(row[index] || "").length),
+          ...normalizedRows.map(
+            (row) => stripMarkdown(row[index] || "").length,
+          ),
           1,
         ),
         minColumnWidth,
@@ -94,7 +108,9 @@ function renderTable(rows: string[][], indent: string): string[] {
   };
 
   const renderRow = (row: string[], accent = false) => {
-    const cellLines = row.map((cell, index) => renderCellLines(cell, widths[index] || 1));
+    const cellLines = row.map((cell, index) =>
+      renderCellLines(cell, widths[index] || 1),
+    );
     const rowHeight = Math.max(...cellLines.map((lines) => lines.length));
     const renderedLines: string[] = [];
 
@@ -154,7 +170,11 @@ export function renderRichTextLines(text: string, indent = "  "): string[] {
     }
 
     const maybeHeader = parseTableRow(line);
-    if (maybeHeader && index + 1 < lines.length && isTableSeparatorLine(lines[index + 1] || "")) {
+    if (
+      maybeHeader &&
+      index + 1 < lines.length &&
+      isTableSeparatorLine(lines[index + 1] || "")
+    ) {
       const rows = [maybeHeader];
       index += 2;
       while (index < lines.length) {
@@ -172,19 +192,25 @@ export function renderRichTextLines(text: string, indent = "  "): string[] {
 
     const headingMatch = /^(#{1,6})\s+(.+)$/.exec(trimmed);
     if (headingMatch) {
-      rendered.push(chalk.cyan.bold(`${indent}${stripMarkdown(headingMatch[2])}`));
+      rendered.push(
+        chalk.cyan.bold(`${indent}${stripMarkdown(headingMatch[2])}`),
+      );
       continue;
     }
 
     const boldHeadingMatch = /^\*\*(.+)\*\*$/.exec(trimmed);
     if (boldHeadingMatch) {
-      rendered.push(chalk.cyan.bold(`${indent}${stripMarkdown(boldHeadingMatch[1])}`));
+      rendered.push(
+        chalk.cyan.bold(`${indent}${stripMarkdown(boldHeadingMatch[1])}`),
+      );
       continue;
     }
 
     const bulletMatch = /^[-*]\s+(.+)$/.exec(trimmed);
     if (bulletMatch) {
-      rendered.push(`${chalk.gray(`${indent}• `)}${formatInlineMarkdown(bulletMatch[1])}`);
+      rendered.push(
+        `${chalk.gray(`${indent}• `)}${formatInlineMarkdown(bulletMatch[1])}`,
+      );
       continue;
     }
 
@@ -201,7 +227,10 @@ export function renderRichTextLines(text: string, indent = "  "): string[] {
       continue;
     }
 
-    for (const wrappedLine of wrapPlainText(trimmed, getTerminalWidth() - indent.length)) {
+    for (const wrappedLine of wrapPlainText(
+      trimmed,
+      getTerminalWidth() - indent.length,
+    )) {
       rendered.push(`${indent}${formatInlineMarkdown(wrappedLine)}`);
     }
   }

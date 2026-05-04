@@ -1,13 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildContext,
   buildProjectMap,
+  dedupeSearchMatches,
   extractExternalDependenciesWithAst,
   extractImportedSymbolsWithAst,
   extractRelationsWithAst,
   extractTopLevelSymbols,
   extractTopLevelSymbolsWithAst,
+  filterMatchesByMode,
+  formatSearchTextResult,
   getProjectMapRole,
+  getSearchLineMatcher,
+  globFiles,
   globToRegExp,
   matchesGlobPattern,
   matchesSearchFilters,
@@ -24,6 +32,19 @@ import {
   shouldSkipEntry,
   sortMatches,
 } from "./search.js";
+
+let tempDir: string | null = null;
+
+beforeEach(() => {
+  tempDir = null;
+});
+
+afterEach(async () => {
+  if (tempDir) {
+    await fs.rm(tempDir, { recursive: true, force: true });
+    tempDir = null;
+  }
+});
 
 describe("shouldSkipEntry", () => {
   it("跳过 node_modules", () =>
@@ -176,6 +197,56 @@ describe("matchesSearchFilters", () => {
   });
 });
 
+describe("globFiles", () => {
+  it("按 glob 查找文件并稳定排序", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "glob-files-"));
+    await fs.mkdir(path.join(tempDir, "src", "agent"), { recursive: true });
+    await fs.mkdir(path.join(tempDir, "dist"), { recursive: true });
+    await fs.writeFile(path.join(tempDir, "src", "index.ts"), "", "utf8");
+    await fs.writeFile(
+      path.join(tempDir, "src", "agent", "run.ts"),
+      "",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "src", "agent", "run.test.ts"),
+      "",
+      "utf8",
+    );
+    await fs.writeFile(path.join(tempDir, "dist", "built.ts"), "", "utf8");
+
+    await expect(
+      globFiles({
+        pattern: "**/*.ts",
+        path: tempDir,
+        excludeGlobs: ["**/*.test.ts"],
+        confirmed: true,
+      }),
+    ).resolves.toEqual(["src/agent/run.ts", "src/index.ts"]);
+  });
+
+  it("遵守 maxResults 上限", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "glob-files-limit-"));
+    await fs.writeFile(path.join(tempDir, "a.ts"), "", "utf8");
+    await fs.writeFile(path.join(tempDir, "b.ts"), "", "utf8");
+
+    const result = await globFiles({
+      pattern: "**/*.ts",
+      path: tempDir,
+      maxResults: 1,
+      confirmed: true,
+    });
+
+    expect(result).toHaveLength(1);
+  });
+
+  it("工作区外路径未确认时拒绝查找", async () => {
+    await expect(
+      globFiles({ pattern: "**/*.ts", path: os.tmpdir() }),
+    ).rejects.toThrow("搜索工作区外目录前需要用户确认");
+  });
+});
+
 describe("buildContext", () => {
   const lines = ["line0", "line1", "line2", "line3", "line4"];
 
@@ -199,6 +270,26 @@ describe("buildContext", () => {
     const ctx = buildContext(lines, 5, 2);
     expect(ctx.before).toEqual(["line2", "line3"]);
     expect(ctx.after).toBeUndefined();
+  });
+});
+
+describe("getSearchLineMatcher", () => {
+  it("默认不区分大小写并按固定字符串匹配", () => {
+    const matcher = getSearchLineMatcher("hello.world");
+    expect(matcher("HELLO.WORLD")).toBe(true);
+    expect(matcher("hello-world")).toBe(false);
+  });
+
+  it("支持大小写敏感", () => {
+    const matcher = getSearchLineMatcher("Hello", { caseSensitive: true });
+    expect(matcher("Hello world")).toBe(true);
+    expect(matcher("hello world")).toBe(false);
+  });
+
+  it("支持正则匹配", () => {
+    const matcher = getSearchLineMatcher("hello\\s+world", { regex: true });
+    expect(matcher("HELLO   world")).toBe(true);
+    expect(matcher("hello-world")).toBe(false);
   });
 });
 
@@ -264,6 +355,128 @@ describe("sortMatches", () => {
     const matches = [makeMatch("a.ts", 10, "x"), makeMatch("a.ts", 1, "x")];
     const sorted = sortMatches(matches, "q");
     expect(sorted[0].line).toBe(1);
+  });
+});
+
+describe("search result helpers", () => {
+  it("按文件、行号和文本稳定去重", () => {
+    expect(
+      dedupeSearchMatches([
+        { path: "a.ts", line: 1, text: "hello", query: "hello" },
+        { path: "a.ts", line: 1, text: "hello", query: "world" },
+        { path: "a.ts", line: 2, text: "hello", query: "hello" },
+      ]),
+    ).toEqual([
+      { path: "a.ts", line: 1, text: "hello", query: "hello" },
+      { path: "a.ts", line: 2, text: "hello", query: "hello" },
+    ]);
+  });
+
+  it("all 模式只保留同一行命中所有 query 的结果", () => {
+    const matches = [
+      { path: "a.ts", line: 1, text: "hello world", query: "hello" },
+      { path: "a.ts", line: 1, text: "hello world", query: "world" },
+      { path: "a.ts", line: 2, text: "hello", query: "hello" },
+    ];
+
+    expect(filterMatchesByMode(matches, ["hello", "world"], "all")).toEqual([
+      { path: "a.ts", line: 1, text: "hello world", query: "hello" },
+      { path: "a.ts", line: 1, text: "hello world", query: "world" },
+    ]);
+  });
+});
+
+describe("formatSearchTextResult", () => {
+  const filters: SearchFilters = {
+    extensions: [],
+    includeGlobs: [],
+    excludeGlobs: [],
+    contextLines: 0,
+    maxResults: 2,
+  };
+
+  it("返回总命中数、截断信息和默认行号", () => {
+    const result = formatSearchTextResult(
+      [
+        { path: "a.ts", line: 1, text: "hello" },
+        { path: "b.ts", line: 2, text: "hello" },
+      ],
+      ["hello"],
+      { ...filters, maxResults: 1 },
+    );
+
+    expect(result.totalMatches).toBe(2);
+    expect(result.returnedMatches).toBe(1);
+    expect(result.resultOffset).toBe(0);
+    expect(result.truncated).toBe(true);
+    expect(result.nextOffset).toBe(1);
+    expect(result.matches?.[0]).toEqual({
+      path: "a.ts",
+      line: 1,
+      text: "hello",
+    });
+  });
+
+  it("支持传入完整总数计算截断", () => {
+    const result = formatSearchTextResult(
+      [{ path: "a.ts", line: 1, text: "hello" }],
+      ["hello"],
+      filters,
+      {},
+      5,
+    );
+
+    expect(result.totalMatches).toBe(5);
+    expect(result.returnedMatches).toBe(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  it("支持 resultOffset 分页", () => {
+    const result = formatSearchTextResult(
+      [
+        { path: "a.ts", line: 1, text: "a" },
+        { path: "a.ts", line: 2, text: "b" },
+        { path: "a.ts", line: 3, text: "c" },
+      ],
+      ["a"],
+      { ...filters, maxResults: 1 },
+      { resultOffset: 1 },
+    );
+
+    expect(result.resultOffset).toBe(1);
+    expect(result.matches?.[0]?.text).toBe("b");
+    expect(result.nextOffset).toBe(2);
+  });
+
+  it("可隐藏行号并按文件聚合", () => {
+    const result = formatSearchTextResult(
+      [
+        { path: "a.ts", line: 1, text: "hello", query: "hello" },
+        { path: "a.ts", line: 3, text: "world", query: "world" },
+      ],
+      ["hello", "world"],
+      filters,
+      { includeLineNumbers: false, groupByFile: true },
+    );
+
+    expect(result.files).toEqual([
+      {
+        path: "a.ts",
+        matchCount: 2,
+        matches: [
+          { path: "a.ts", text: "hello", query: "hello" },
+          { path: "a.ts", text: "world", query: "world" },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("getSearchLineMatcher", () => {
+  it("正则无效时返回友好错误", () => {
+    expect(() => getSearchLineMatcher("[", { regex: true })).toThrow(
+      '无效正则表达式 "["',
+    );
   });
 });
 
@@ -377,7 +590,10 @@ describe("project map helpers", () => {
       "export { helper, format as print } from '../utils/helper';",
     ].join("\n");
     expect(extractImportedSymbolsWithAst(content, "file.ts")).toEqual([
-      { specifier: "./agent", symbols: ["defaultAgent", "createAgent", "runAgent"] },
+      {
+        specifier: "./agent",
+        symbols: ["defaultAgent", "createAgent", "runAgent"],
+      },
       { specifier: "../utils/helper", symbols: ["helper", "format"] },
     ]);
   });
@@ -405,15 +621,40 @@ describe("project map helpers", () => {
   });
 
   it("可以解析并命中工作区内依赖目标", () => {
-    const pathSet = new Set(["src/agent/orchestrator.ts", "src/tools/index.ts"]);
-    expect(resolveProjectRelation("src/agent/orchestrator.ts", "../tools/index")).toBe("src/tools/index");
-    expect(resolveCandidatePath(pathSet, "src/agent/orchestrator.ts", "../tools/index")).toBe("src/tools/index.ts");
+    const pathSet = new Set([
+      "src/agent/orchestrator.ts",
+      "src/tools/index.ts",
+    ]);
+    expect(
+      resolveProjectRelation("src/agent/orchestrator.ts", "../tools/index"),
+    ).toBe("src/tools/index");
+    expect(
+      resolveCandidatePath(
+        pathSet,
+        "src/agent/orchestrator.ts",
+        "../tools/index",
+      ),
+    ).toBe("src/tools/index.ts");
   });
 
   it("可以推断 entry/core/leaf 角色", () => {
-    expect(getProjectMapRole("src/cli/index.ts", ["../agent/orchestrator"], [])).toBe("entry");
-    expect(getProjectMapRole("src/agent/orchestrator.ts", ["../tools/index"], ["src/cli/index.ts"])).toBe("core");
-    expect(getProjectMapRole("src/types/agent.ts", [], ["src/agent/orchestrator.ts"])).toBe("leaf");
+    expect(
+      getProjectMapRole("src/cli/index.ts", ["../agent/orchestrator"], []),
+    ).toBe("entry");
+    expect(
+      getProjectMapRole(
+        "src/agent/orchestrator.ts",
+        ["../tools/index"],
+        ["src/cli/index.ts"],
+      ),
+    ).toBe("core");
+    expect(
+      getProjectMapRole(
+        "src/types/agent.ts",
+        [],
+        ["src/agent/orchestrator.ts"],
+      ),
+    ).toBe("leaf");
   });
 
   it("关键文件、符号和关系越多分数越高", () => {
@@ -442,5 +683,32 @@ describe("project map helpers", () => {
     expect(result[0]).toHaveProperty("references");
     expect(result[0]).toHaveProperty("role");
     expect(result[0]).toHaveProperty("score");
+  });
+
+  it("project map 在大目录下遵守扫描上限并优先返回更关键文件", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "project-map-"));
+    const srcDir = path.join(tempDir, "src");
+    const deepDir = path.join(srcDir, "features", "deep");
+    await fs.mkdir(deepDir, { recursive: true });
+    await fs.writeFile(
+      path.join(srcDir, "index.ts"),
+      "export { feature0 } from './features/deep/feature0';\n",
+      "utf8",
+    );
+    for (let index = 0; index < 12; index++) {
+      await fs.writeFile(
+        path.join(deepDir, `feature${index}.ts`),
+        `export const feature${index} = ${index};\n`,
+        "utf8",
+      );
+    }
+
+    const result = await buildProjectMap(srcDir, true, {
+      maxFiles: 3,
+      scanLimit: 5,
+    });
+
+    expect(result.length).toBeLessThanOrEqual(3);
+    expect(result.some((entry) => entry.path === "index.ts")).toBe(true);
   });
 });

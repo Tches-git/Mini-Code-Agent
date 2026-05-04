@@ -1,15 +1,21 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   readLintDiagnostics,
   readTypeScriptDiagnostics,
 } from "../tools/diagnostics.js";
 import { normalizeFilePath } from "../utils/path.js";
-import { getWorkspaceRoot } from "../utils/runtime.js";
+import {
+  detectPackageManager,
+  detectRunnerByHints,
+  getProjectToolingConfig,
+  type PackageManager,
+  pickScriptName,
+  readWorkspacePackageJson,
+  type WorkspacePackageJson,
+} from "../utils/project-tooling.js";
 
 const DEFAULT_VALIDATION_COMMAND = "npm run build";
 const VALIDATION_SCRIPT_ORDER = ["lint", "test", "build"] as const;
-const LINT_SCRIPT_CANDIDATES = ["lint", "check"] as const;
 const PLACEHOLDER_TEST_PATTERN = /no test specified|exit 1/i;
 const MAX_TARGETED_TEST_FILES = 6;
 const TARGETED_TEST_UNSUPPORTED_PATTERNS = [
@@ -22,9 +28,7 @@ const TARGETED_TEST_UNSUPPORTED_PATTERNS = [
   /unsupported option/i,
 ];
 
-type PackageJson = { scripts?: Record<string, string> };
 type ValidationScriptName = (typeof VALIDATION_SCRIPT_ORDER)[number];
-type LintScriptName = (typeof LINT_SCRIPT_CANDIDATES)[number];
 
 type TestRunner = "vitest" | "jest";
 
@@ -260,57 +264,45 @@ function inferValidationScripts(changedPaths: string[]): ValidationInference {
   };
 }
 
-async function detectPackageManager(): Promise<
-  "npm" | "pnpm" | "yarn" | "bun"
-> {
-  for (const check of [
-    { file: "pnpm-lock.yaml", manager: "pnpm" },
-    { file: "yarn.lock", manager: "yarn" },
-    { file: "bun.lockb", manager: "bun" },
-    { file: "bun.lock", manager: "bun" },
-    { file: "package-lock.json", manager: "npm" },
-  ] as const) {
-    try {
-      await fs.access(path.join(getWorkspaceRoot(), check.file));
-      return check.manager;
-    } catch {}
-  }
-  const userAgent = process.env.npm_config_user_agent || "";
-  if (userAgent.startsWith("pnpm")) return "pnpm";
-  if (userAgent.startsWith("yarn")) return "yarn";
-  if (userAgent.startsWith("bun")) return "bun";
-  return "npm";
-}
-
 function quoteCommandArg(value: string): string {
   if (/^[A-Za-z0-9_./:-]+$/.test(value)) return value;
   return JSON.stringify(value);
 }
 
-function detectTestRunner(scriptCommand: string): TestRunner | null {
-  const normalizedScript = scriptCommand.trim();
-  if (/\bvitest\b/.test(normalizedScript)) return "vitest";
-  if (/\bjest\b/.test(normalizedScript)) return "jest";
-  return null;
+function detectTestRunner(
+  scriptCommand: string,
+  packageJson?: WorkspacePackageJson | null,
+): TestRunner | null {
+  return (
+    detectRunnerByHints(
+      scriptCommand,
+      getProjectToolingConfig(packageJson).validation.testRunnerHints,
+    ) || null
+  );
 }
 
 function buildTargetedTestCommand(
-  packageManager: "npm" | "pnpm" | "yarn" | "bun",
+  packageManager: PackageManager,
   scriptCommand: string,
   testPaths: string[],
+  packageJson?: WorkspacePackageJson | null,
+  scriptName = "test",
 ): string | null {
-  const targets = Array.from(new Set(testPaths)).slice(0, MAX_TARGETED_TEST_FILES);
+  const targets = Array.from(new Set(testPaths)).slice(
+    0,
+    MAX_TARGETED_TEST_FILES,
+  );
   if (targets.length === 0) return null;
 
-  const testRunner = detectTestRunner(scriptCommand);
+  const testRunner = detectTestRunner(scriptCommand, packageJson);
   if (testRunner === "vitest") {
     const pathArgs = targets.map(quoteCommandArg).join(" ");
-    return `${packageManager} run test -- ${pathArgs}`;
+    return `${packageManager} run ${scriptName} -- ${pathArgs}`;
   }
 
   if (testRunner === "jest") {
     const pathArgs = targets.map(quoteCommandArg).join(" ");
-    return `${packageManager} run test -- --runTestsByPath ${pathArgs}`;
+    return `${packageManager} run ${scriptName} -- --runTestsByPath ${pathArgs}`;
   }
 
   return null;
@@ -333,7 +325,9 @@ function extractMatchingPaths(
     }
   }
   if (testRunner === "jest") {
-    for (const match of text.matchAll(/(?:FAIL|PASS)\s+([^\s]+\.(?:test|spec)\.[^\s:]+)/g)) {
+    for (const match of text.matchAll(
+      /(?:FAIL|PASS)\s+([^\s]+\.(?:test|spec)\.[^\s:]+)/g,
+    )) {
       matches.add(normalizeFilePath(match[1]));
     }
   }
@@ -344,14 +338,22 @@ export function getValidationReplayCommand(
   step: ValidationCommandStep,
   result: CommandResult | null,
 ): string | null {
-  if (step.kind !== "test" || !result?.exitCode || result.exitCode === 0) return null;
+  if (step.kind !== "test" || !result?.exitCode || result.exitCode === 0)
+    return null;
   if (!step.testRunner) return null;
   const output = `${result.stdout || ""}\n${result.stderr || ""}`;
   const failedPaths = extractMatchingPaths(output, step.testRunner);
   if (failedPaths.length === 0) return null;
-  const command = buildTargetedTestCommand("npm", `${step.testRunner} run`, failedPaths);
+  const command = buildTargetedTestCommand(
+    "npm",
+    `${step.testRunner} run`,
+    failedPaths,
+  );
   if (!command) return null;
-  return command.replace(/^npm run test/, step.fallbackCommand || step.command.split(" -- ")[0] || step.command);
+  return command.replace(
+    /^npm run test/,
+    step.fallbackCommand || step.command.split(" -- ")[0] || step.command,
+  );
 }
 
 export function shouldRetryValidationWithFallback(
@@ -359,10 +361,13 @@ export function shouldRetryValidationWithFallback(
   result: CommandResult | null,
   fallbackCommand?: string,
 ): boolean {
-  if (!fallbackCommand || !result?.exitCode || result.exitCode === 0) return false;
+  if (!fallbackCommand || !result?.exitCode || result.exitCode === 0)
+    return false;
   if (command === fallbackCommand) return false;
   const output = `${result.stdout || ""}\n${result.stderr || ""}`;
-  return TARGETED_TEST_UNSUPPORTED_PATTERNS.some((pattern) => pattern.test(output));
+  return TARGETED_TEST_UNSUPPORTED_PATTERNS.some((pattern) =>
+    pattern.test(output),
+  );
 }
 
 export async function getValidationPlan(
@@ -372,21 +377,30 @@ export async function getValidationPlan(
   if (inferred.scripts.size === 0)
     return { commands: [], reason: inferred.reason, steps: [] };
   try {
-    const packageJson = JSON.parse(
-      await fs.readFile(path.join(getWorkspaceRoot(), "package.json"), "utf8"),
-    ) as PackageJson;
-    const scripts = packageJson.scripts || {};
+    const packageJson = await readWorkspacePackageJson();
+    const scripts = packageJson?.scripts || {};
+    const tooling = getProjectToolingConfig(packageJson);
     const packageManager = await detectPackageManager();
-    const lintScriptName = LINT_SCRIPT_CANDIDATES.find((name) => scripts[name]) as
-      | LintScriptName
-      | undefined;
+    const lintScriptName = pickScriptName(
+      scripts,
+      tooling.validation.lintScripts,
+    );
+    const testScriptName = pickScriptName(
+      scripts,
+      tooling.validation.testScripts,
+    );
+    const buildScriptName = pickScriptName(
+      scripts,
+      tooling.validation.buildScripts,
+    );
     const available = {
       lint: lintScriptName,
       test:
-        scripts.test && !PLACEHOLDER_TEST_PATTERN.test(scripts.test)
-          ? "test"
+        testScriptName &&
+        !PLACEHOLDER_TEST_PATTERN.test(scripts[testScriptName] || "")
+          ? testScriptName
           : undefined,
-      build: scripts.build ? "build" : undefined,
+      build: buildScriptName,
     } satisfies Partial<Record<ValidationScriptName, string | undefined>>;
     const selected = VALIDATION_SCRIPT_ORDER.filter(
       (name) => inferred.scripts.has(name) && available[name],
@@ -407,13 +421,15 @@ export async function getValidationPlan(
           packageManager,
           testScript,
           inferred.testPaths,
+          packageJson,
+          scriptName,
         );
         return {
           kind: name,
           command: targetedCommand || defaultCommand,
           fallbackCommand: targetedCommand ? defaultCommand : undefined,
           targeted: Boolean(targetedCommand),
-          testRunner: detectTestRunner(testScript) || undefined,
+          testRunner: detectTestRunner(testScript, packageJson) || undefined,
         };
       });
       const targetedTestCount = steps.filter((step) => step.targeted).length;
@@ -439,7 +455,9 @@ export async function getValidationPlan(
         kind: "test",
         command: `${packageManager} run ${available.test}`,
         targeted: false,
-        testRunner: detectTestRunner(scripts[available.test] as string) || undefined,
+        testRunner:
+          detectTestRunner(scripts[available.test] as string, packageJson) ||
+          undefined,
       });
     }
     if (available.build) {

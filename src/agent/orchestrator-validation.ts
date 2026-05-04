@@ -1,16 +1,18 @@
 import type { ChatMessage, ToolDefinition } from "../types/agent.js";
+import type { AutoValidationResult } from "./orchestrator-types.js";
 import {
   buildFailurePrompt,
+  type CommandResult,
   getDiagnosticsForValidationCommand,
   getValidationPlan,
   getValidationReplayCommand,
   parseCommandResult,
   shouldRetryValidationWithFallback,
-  type CommandResult,
 } from "./validation.js";
-import type { AutoValidationResult } from "./orchestrator-types.js";
 
-function normalizeToolResult(raw: string | { message: string }): { message: string } {
+function normalizeToolResult(raw: string | { message: string }): {
+  message: string;
+} {
   return typeof raw === "string" ? { message: raw } : { message: raw.message };
 }
 
@@ -26,7 +28,11 @@ export async function runAutoValidation(
     };
     messages: ChatMessage[];
     rememberMessageFocus: (message: ChatMessage) => void;
-    emit: (event: { type: "auto_validate"; command: string } | { type: "auto_validate_skipped"; reason: string }) => void;
+    emit: (
+      event:
+        | { type: "auto_validate"; command: string }
+        | { type: "auto_validate_skipped"; reason: string },
+    ) => void;
   },
   iteration: number,
   steps: string[],
@@ -61,7 +67,9 @@ export async function runAutoValidation(
       }
 
       steps.push(
-        attemptLabel ? `自动验证${attemptLabel}: ${command}` : `自动验证: ${command}`,
+        attemptLabel
+          ? `自动验证${attemptLabel}: ${command}`
+          : `自动验证: ${command}`,
       );
       dependencies.emit({ type: "auto_validate", command });
       const rawResult = await runCommandTool.execute({
@@ -123,7 +131,9 @@ export async function runAutoValidation(
         const diagnostics = await getDiagnosticsForValidationCommand(
           step.fallbackCommand as string,
         );
-        return { failedPrompt: buildFailurePrompt(fallbackResult, diagnostics) };
+        return {
+          failedPrompt: buildFailurePrompt(fallbackResult, diagnostics),
+        };
       }
       continue;
     }
@@ -132,17 +142,23 @@ export async function runAutoValidation(
       const replayCommand = getValidationReplayCommand(step, primaryResult);
       if (replayCommand && replayCommand !== step.command) {
         steps.push(`根据失败输出重放受影响测试: ${replayCommand}`);
-        const replayResult = await runValidationCommand(replayCommand, "（失败重放）");
+        const replayResult = await runValidationCommand(
+          replayCommand,
+          "（失败重放）",
+        );
         if (!replayResult) {
           return { skipped: true, validated: true };
         }
         if (!replayResult.exitCode || replayResult.exitCode === 0) {
           continue;
         }
-        const diagnostics = await getDiagnosticsForValidationCommand(replayCommand);
+        const diagnostics =
+          await getDiagnosticsForValidationCommand(replayCommand);
         return { failedPrompt: buildFailurePrompt(replayResult, diagnostics) };
       }
-      const diagnostics = await getDiagnosticsForValidationCommand(step.command);
+      const diagnostics = await getDiagnosticsForValidationCommand(
+        step.command,
+      );
       return { failedPrompt: buildFailurePrompt(primaryResult, diagnostics) };
     }
   }

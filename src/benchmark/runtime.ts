@@ -5,7 +5,10 @@ export function getBenchmarkSourceWorkspace(): string {
   return getWorkspaceRoot();
 }
 
-export function withBenchmarkWorkspace<T>(workspacePath: string, run: () => Promise<T>): Promise<T> {
+export function withBenchmarkWorkspace<T>(
+  workspacePath: string,
+  run: () => Promise<T>,
+): Promise<T> {
   const previous = getWorkspaceRoot();
   setWorkspaceRoot(workspacePath);
   return run().finally(() => {
@@ -14,5 +17,8 @@ export function withBenchmarkWorkspace<T>(workspacePath: string, run: () => Prom
 }
 
 export function resolveBenchmarkReportPath(outputPath?: string): string {
-  return outputPath || path.join(getWorkspaceRoot(), ".mini-claude-code", "benchmark-report.json");
+  return (
+    outputPath ||
+    path.join(getWorkspaceRoot(), ".mini-claude-code", "benchmark-report.json")
+  );
 }

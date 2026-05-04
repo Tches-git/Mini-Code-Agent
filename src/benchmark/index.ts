@@ -9,7 +9,10 @@ import {
   type BenchmarkIsolationConfig,
   prepareBenchmarkIsolation,
 } from "./isolation.js";
-import { resolveBenchmarkReportPath, withBenchmarkWorkspace } from "./runtime.js";
+import {
+  resolveBenchmarkReportPath,
+  withBenchmarkWorkspace,
+} from "./runtime.js";
 import {
   type BenchmarkTask,
   type BenchmarkTaskPrecondition,
@@ -195,10 +198,7 @@ function onBenchmarkEvent(metrics: BenchmarkTaskMetrics) {
         const normalizedPath = event.diff?.path
           ? normalizeModifiedPath(event.diff.path)
           : undefined;
-        if (
-          normalizedPath &&
-          !metrics.modifiedFiles.includes(normalizedPath)
-        ) {
+        if (normalizedPath && !metrics.modifiedFiles.includes(normalizedPath)) {
           metrics.modifiedFiles.push(normalizedPath);
         }
         break;
@@ -283,7 +283,7 @@ function createPassingExpectationChecks(): BenchmarkTaskResult["expectationCheck
 }
 
 function inferRuntimeErrorFailureType(errorText: string): BenchmarkFailureType {
-  return /api connection|connection error|eperm|enoent|eacces|network|fetcherror|listen|connect|pipe|module not found|cannot find module|vitest|@types\/node|node:/i.test(
+  return /api connection|connection error|eperm|enoent|eacces|network|fetcherror|listen|connect|pipe|module not found|cannot find module|vitest|@types\/node|node:|quota|not enough|notenough|tokens\.total|business\.total|rate limit|429/i.test(
     errorText,
   )
     ? "environment"
@@ -295,6 +295,9 @@ function inferFailureType(
   finalText: string,
   expectationChecks: BenchmarkTaskResult["expectationChecks"],
 ): BenchmarkFailureType {
+  const runtimeFailureType = inferRuntimeErrorFailureType(finalText);
+  if (runtimeFailureType === "environment") return "environment";
+
   if (expectationChecks.mustPassValidationMet === false) {
     return /依赖|环境|解析|module not found|cannot find module|enoent|vitest|@types\/node|node:/i.test(
       finalText,
@@ -466,7 +469,8 @@ export async function runBenchmark(
     const isolation = await prepareBenchmarkIsolation(task, options?.isolation);
     try {
       await withBenchmarkWorkspace(isolation.workspacePath, async () => {
-        const preconditionFailureReason = await getPreconditionFailureReason(task);
+        const preconditionFailureReason =
+          await getPreconditionFailureReason(task);
         if (preconditionFailureReason) {
           results.push({
             id: task.id,
@@ -507,7 +511,11 @@ export async function runBenchmark(
           const start = performance.now();
           const result = await agent.run(task.prompt);
           const durationMs = performance.now() - start;
-          const expectationChecks = evaluateTask(task, result.finalText, metrics);
+          const expectationChecks = evaluateTask(
+            task,
+            result.finalText,
+            metrics,
+          );
 
           const failureType = expectationChecks.passed
             ? "none"
@@ -540,7 +548,8 @@ export async function runBenchmark(
             },
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           results.push({
             id: task.id,
             title: task.title,

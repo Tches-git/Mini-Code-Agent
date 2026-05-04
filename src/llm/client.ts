@@ -2,10 +2,7 @@ import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/index.js";
 import type { ChatMessage, ToolDefinition } from "../types/agent.js";
 import type { LlmResponse, StreamEvent, ToolCall } from "../types/llm.js";
-import {
-  DEFAULT_MODEL_NAME,
-  getEnv,
-} from "./env.js";
+import { DEFAULT_MODEL_NAME, getEnv } from "./env.js";
 
 export type ConnectivityCheckResult = {
   ok: boolean;

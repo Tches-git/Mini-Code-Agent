@@ -32,7 +32,9 @@ export function estimateTokens(text: string): number {
   }
 
   const englishTokens =
-    englishChars > 0 ? Math.max(1, Math.ceil(englishChars * ENGLISH_CHAR_WEIGHT)) : 0;
+    englishChars > 0
+      ? Math.max(1, Math.ceil(englishChars * ENGLISH_CHAR_WEIGHT))
+      : 0;
 
   return englishTokens + nonEnglishTokens;
 }

@@ -1,20 +1,21 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execa } from "execa";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
 import { normalizeFilePath } from "../utils/path.js";
+import {
+  detectPackageManager,
+  detectRunnerByHints,
+  getProjectToolingConfig,
+  pickScriptName,
+  readWorkspacePackageJson,
+} from "../utils/project-tooling.js";
 import { getWorkspaceRoot } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
 const DIAGNOSTICS_TIMEOUT_MS = 60_000;
 const DIAGNOSTIC_LIMIT = 200;
 
-type PackageJson = {
-  scripts?: Record<string, string>;
-};
-
-type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 type TypeScriptScriptName = "typecheck" | "build";
 type LintRunner = "biome" | "eslint";
 
@@ -185,50 +186,23 @@ async function runCommand(command: string, args: string[]): Promise<string> {
   return [result.stdout, result.stderr].filter(Boolean).join("\n");
 }
 
-async function readPackageJson(): Promise<PackageJson | null> {
-  try {
-    return JSON.parse(
-      await fs.readFile(path.join(getWorkspaceRoot(), "package.json"), "utf8"),
-    ) as PackageJson;
-  } catch {
-    return null;
-  }
-}
-
-async function detectPackageManager(): Promise<PackageManager> {
-  for (const check of [
-    { file: "pnpm-lock.yaml", manager: "pnpm" },
-    { file: "yarn.lock", manager: "yarn" },
-    { file: "bun.lockb", manager: "bun" },
-    { file: "bun.lock", manager: "bun" },
-    { file: "package-lock.json", manager: "npm" },
-  ] as const) {
-    try {
-      await fs.access(path.join(getWorkspaceRoot(), check.file));
-      return check.manager;
-    } catch {}
-  }
-  const userAgent = process.env.npm_config_user_agent || "";
-  if (userAgent.startsWith("pnpm")) return "pnpm";
-  if (userAgent.startsWith("yarn")) return "yarn";
-  if (userAgent.startsWith("bun")) return "bun";
-  return "npm";
-}
-
 async function getLintDiagnosticCommand(): Promise<{
   command: string;
   args: string[];
   runner: LintRunner;
 }> {
-  const packageJson = await readPackageJson();
-  const lintScriptName = packageJson?.scripts?.lint?.trim()
-    ? "lint"
-    : packageJson?.scripts?.check?.trim()
-      ? "check"
-      : null;
+  const packageJson = await readWorkspacePackageJson();
+  const scripts = packageJson?.scripts || {};
+  const tooling = getProjectToolingConfig(packageJson);
+  const lintScriptName = pickScriptName(
+    scripts,
+    tooling.diagnostics.lintScripts,
+  );
   const packageManager = await detectPackageManager();
-  const lintScript = lintScriptName ? packageJson?.scripts?.[lintScriptName] || "" : "";
-  const runner: LintRunner = /\beslint\b/.test(lintScript) ? "eslint" : "biome";
+  const lintScript = lintScriptName ? scripts[lintScriptName] || "" : "";
+  const runner =
+    detectRunnerByHints(lintScript, tooling.diagnostics.lintRunnerHints) ||
+    "biome";
   if (lintScriptName) {
     return {
       command: packageManager,
@@ -250,9 +224,12 @@ async function getTypeScriptDiagnosticCommand(): Promise<{
   command: string;
   args: string[];
 }> {
-  const packageJson = await readPackageJson();
-  const scriptName = (["typecheck", "build"] as const).find(
-    (name) => packageJson?.scripts?.[name]?.trim(),
+  const packageJson = await readWorkspacePackageJson();
+  const scripts = packageJson?.scripts || {};
+  const tooling = getProjectToolingConfig(packageJson);
+  const scriptName = pickScriptName(
+    scripts,
+    tooling.diagnostics.typecheckScripts,
   ) as TypeScriptScriptName | undefined;
   if (scriptName) {
     const packageManager = await detectPackageManager();
@@ -269,7 +246,10 @@ async function getTypeScriptDiagnosticCommand(): Promise<{
 
 async function readTypeScriptDiagnostics(): Promise<DiagnosticsResult> {
   const diagnosticCommand = await getTypeScriptDiagnosticCommand();
-  const output = await runCommand(diagnosticCommand.command, diagnosticCommand.args);
+  const output = await runCommand(
+    diagnosticCommand.command,
+    diagnosticCommand.args,
+  );
   const parsed = limitDiagnostics(parseTscDiagnostics(output));
   return {
     command: [diagnosticCommand.command, ...diagnosticCommand.args].join(" "),

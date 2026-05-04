@@ -103,11 +103,14 @@ describe("validation helpers", () => {
         {
           command: "npm run test",
           exitCode: 1,
-          stdout: " FAIL  src/utils/token.test.ts\n FAIL  src/cli/interactive.test.ts",
+          stdout:
+            " FAIL  src/utils/token.test.ts\n FAIL  src/cli/interactive.test.ts",
           stderr: "",
         },
       ),
-    ).toBe("npm run test -- src/utils/token.test.ts src/cli/interactive.test.ts");
+    ).toBe(
+      "npm run test -- src/utils/token.test.ts src/cli/interactive.test.ts",
+    );
   });
 
   it("getValidationReplayCommand 能从 jest 输出提取失败测试路径", () => {
@@ -252,7 +255,8 @@ describe("getValidationPlan", () => {
       },
       {
         kind: "test",
-        command: "npm run test -- src/utils/token.test.ts src/cli/interactive.test.ts",
+        command:
+          "npm run test -- src/utils/token.test.ts src/cli/interactive.test.ts",
         fallbackCommand: "npm run test",
         targeted: true,
         testRunner: "vitest",
@@ -305,5 +309,43 @@ describe("getValidationPlan", () => {
     const plan = await getValidationPlan(["src/index.ts"]);
     expect(plan.commands).toEqual(["npm run build"]);
     expect(plan.reason).toContain("默认构建验证");
+  });
+
+  it("supports custom validation script names from package.json config", async () => {
+    vi.spyOn(fs, "readFile").mockResolvedValue(
+      JSON.stringify({
+        scripts: {
+          static: "eslint .",
+          verify: "vitest run",
+          compile: "tsc --noEmit",
+        },
+        miniClaudeCode: {
+          validation: {
+            lintScripts: ["static"],
+            testScripts: ["verify"],
+            buildScripts: ["compile"],
+          },
+        },
+      }),
+    );
+    vi.spyOn(fs, "access").mockImplementation(async (target) => {
+      if (String(target).endsWith("package-lock.json")) return;
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+
+    const plan = await getValidationPlan(["src/index.ts", "src/index.test.ts"]);
+
+    expect(plan.commands).toEqual([
+      "npm run static",
+      "npm run verify -- src/index.test.ts",
+      "npm run compile",
+    ]);
+    expect(plan.steps[1]).toEqual({
+      kind: "test",
+      command: "npm run verify -- src/index.test.ts",
+      fallbackCommand: "npm run verify",
+      targeted: true,
+      testRunner: "vitest",
+    });
   });
 });

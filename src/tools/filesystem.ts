@@ -23,6 +23,19 @@ function getImportsDir(): string {
   return path.join(getRoot(), ".imports");
 }
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+const DEFAULT_READ_FILE_LINE_LIMIT = 2000;
+const MAX_READ_FILE_LINE_LIMIT = 5000;
+const DEFAULT_TREE_MAX_DEPTH = 3;
+const DEFAULT_TREE_MAX_ENTRIES = 200;
+const MAX_TREE_MAX_DEPTH = 8;
+const MAX_TREE_MAX_ENTRIES = 1000;
+const TREE_IGNORED_DIRECTORIES = new Set([
+  "node_modules",
+  ".git",
+  ".backup",
+  ".imports",
+  "dist",
+]);
 const TEXTUTIL_EXTRACTION_EXTENSIONS = new Set([
   ".doc",
   ".docx",
@@ -96,6 +109,39 @@ type ExternalImportResult = {
   summary: string;
 };
 
+type ReadFileOptions = {
+  path: string;
+  offset?: number;
+  limit?: number;
+  confirmed?: boolean;
+};
+
+type InspectFileOptions = {
+  path: string;
+  confirmed?: boolean;
+};
+
+type ImageDimensions = {
+  width: number;
+  height: number;
+};
+
+type ReplaceRangeOptions = {
+  path: string;
+  startLine: number;
+  endLine: number;
+  content: string;
+  confirmed?: boolean;
+};
+
+type TreeFilesOptions = {
+  path: string;
+  maxDepth?: number;
+  maxEntries?: number;
+  includeFiles?: boolean;
+  confirmed?: boolean;
+};
+
 function normalizeSlashes(target: string): string {
   return target.replace(/\\/g, "/");
 }
@@ -132,6 +178,158 @@ function toDiffLabel(displayPath: string): string {
   return displayPath.startsWith("/") ? displayPath.slice(1) : displayPath;
 }
 
+function normalizeReadOffset(offset?: number): number {
+  return Number.isFinite(offset) ? Math.max(0, offset || 0) : 0;
+}
+
+function normalizeReadLimit(limit?: number): number {
+  return Number.isFinite(limit)
+    ? Math.max(
+        1,
+        Math.min(
+          MAX_READ_FILE_LINE_LIMIT,
+          limit || DEFAULT_READ_FILE_LINE_LIMIT,
+        ),
+      )
+    : DEFAULT_READ_FILE_LINE_LIMIT;
+}
+
+function formatReadFileContent(
+  content: string,
+  options: ReadFileOptions,
+): string {
+  const offset = normalizeReadOffset(options.offset);
+  const limit = normalizeReadLimit(options.limit);
+  const lines = content.split("\n");
+  const selected = lines.slice(offset, offset + limit);
+  const endLine = offset + selected.length;
+  const isTruncated = endLine < lines.length;
+  const header = [
+    `File: ${options.path}`,
+    `Lines: ${offset + 1}-${endLine} of ${lines.length}`,
+    isTruncated
+      ? `Truncated: true (use offset=${endLine}, limit=${limit} to continue)`
+      : "Truncated: false",
+  ].join("\n");
+
+  return `${header}\n\n${selected.join("\n")}`;
+}
+
+async function readFileContent(options: ReadFileOptions): Promise<string> {
+  const target = resolveAccessiblePath(options.path, options.confirmed);
+  const content = await fs.readFile(target, "utf8");
+  return formatReadFileContent(content, {
+    ...options,
+    path: toDisplayPath(target),
+  });
+}
+
+function replaceLineRangeContent(
+  source: string,
+  options: ReplaceRangeOptions,
+): string {
+  const lines = source.split("\n");
+  if (options.startLine < 1 || options.endLine < options.startLine) {
+    throw new Error(
+      "行号范围无效：startLine 必须 >= 1 且 endLine 必须 >= startLine",
+    );
+  }
+  if (options.endLine > lines.length) {
+    throw new Error(`行号范围超出文件长度：文件共 ${lines.length} 行`);
+  }
+
+  const replacementLines = options.content.split("\n");
+  lines.splice(
+    options.startLine - 1,
+    options.endLine - options.startLine + 1,
+    ...replacementLines,
+  );
+  return lines.join("\n");
+}
+
+function normalizeTreeMaxDepth(maxDepth?: number): number {
+  return Number.isFinite(maxDepth)
+    ? Math.max(
+        0,
+        Math.min(MAX_TREE_MAX_DEPTH, maxDepth || DEFAULT_TREE_MAX_DEPTH),
+      )
+    : DEFAULT_TREE_MAX_DEPTH;
+}
+
+function normalizeTreeMaxEntries(maxEntries?: number): number {
+  return Number.isFinite(maxEntries)
+    ? Math.max(
+        1,
+        Math.min(MAX_TREE_MAX_ENTRIES, maxEntries || DEFAULT_TREE_MAX_ENTRIES),
+      )
+    : DEFAULT_TREE_MAX_ENTRIES;
+}
+
+async function buildTreeFilesOutput(
+  options: TreeFilesOptions,
+): Promise<string> {
+  const target = resolveAccessiblePath(options.path || ".", options.confirmed);
+  const displayRoot = toDisplayPath(target) || ".";
+  const maxDepth = normalizeTreeMaxDepth(options.maxDepth);
+  const maxEntries = normalizeTreeMaxEntries(options.maxEntries);
+  const includeFiles = options.includeFiles !== false;
+  const lines = [`${displayRoot}/`];
+  let entryCount = 0;
+  let skippedCount = 0;
+  let truncated = false;
+
+  const walkTree = async (
+    dir: string,
+    depth: number,
+    prefix: string,
+  ): Promise<void> => {
+    if (truncated || depth >= maxDepth) return;
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const visibleEntries = entries
+      .filter((entry) => entry.isDirectory() || includeFiles)
+      .filter((entry) => {
+        if (entry.isDirectory() && TREE_IGNORED_DIRECTORIES.has(entry.name)) {
+          skippedCount += 1;
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const aRank = a.isDirectory() ? 0 : 1;
+        const bRank = b.isDirectory() ? 0 : 1;
+        return aRank - bRank || a.name.localeCompare(b.name);
+      });
+
+    for (const [index, entry] of visibleEntries.entries()) {
+      if (entryCount >= maxEntries) {
+        truncated = true;
+        return;
+      }
+      const isLast = index === visibleEntries.length - 1;
+      const connector = isLast ? "└── " : "├── ";
+      const nextPrefix = `${prefix}${isLast ? "    " : "│   "}`;
+      lines.push(
+        `${prefix}${connector}${entry.name}${entry.isDirectory() ? "/" : ""}`,
+      );
+      entryCount += 1;
+      if (entry.isDirectory()) {
+        await walkTree(path.join(dir, entry.name), depth + 1, nextPrefix);
+      }
+      if (truncated) return;
+    }
+  };
+
+  await walkTree(target, 0, "");
+  lines.push(
+    ``,
+    `Entries: ${entryCount}`,
+    `Max depth: ${maxDepth}`,
+    `Skipped ignored directories: ${skippedCount}`,
+    `Truncated: ${truncated ? "true" : "false"}`,
+  );
+  return lines.join("\n");
+}
+
 function buildDiffEntry(
   displayPath: string,
   summary: string,
@@ -163,6 +361,177 @@ function normalizeImportMode(
 
 function isReadableTextFile(sourcePath: string): boolean {
   return TEXT_FILE_EXTENSIONS.has(getExtension(sourcePath));
+}
+
+function getMimeType(sourcePath: string): string {
+  const extension = getExtension(sourcePath);
+  const mimeTypes: Record<string, string> = {
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".json": "application/json",
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".txt": "text/plain",
+    ".webp": "image/webp",
+    ".xml": "application/xml",
+  };
+  if (mimeTypes[extension]) return mimeTypes[extension];
+  if (TEXT_FILE_EXTENSIONS.has(extension)) return "text/plain";
+  if (TEXT_EXTRACTION_EXTENSIONS.has(extension))
+    return "application/octet-stream";
+  return "application/octet-stream";
+}
+
+function readPngDimensions(buffer: Buffer): ImageDimensions | undefined {
+  if (buffer.length < 24) return undefined;
+  if (
+    buffer
+      .subarray(0, 8)
+      .equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  ) {
+    return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+  }
+  return undefined;
+}
+
+function readGifDimensions(buffer: Buffer): ImageDimensions | undefined {
+  if (buffer.length < 10) return undefined;
+  const signature = buffer.subarray(0, 6).toString("ascii");
+  if (signature === "GIF87a" || signature === "GIF89a") {
+    return { width: buffer.readUInt16LE(6), height: buffer.readUInt16LE(8) };
+  }
+  return undefined;
+}
+
+function readJpegDimensions(buffer: Buffer): ImageDimensions | undefined {
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8)
+    return undefined;
+  let offset = 2;
+  while (offset + 9 < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    const length = buffer.readUInt16BE(offset + 2);
+    if (length < 2) return undefined;
+    if (
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    ) {
+      return {
+        width: buffer.readUInt16BE(offset + 7),
+        height: buffer.readUInt16BE(offset + 5),
+      };
+    }
+    offset += 2 + length;
+  }
+  return undefined;
+}
+
+function readWebpDimensions(buffer: Buffer): ImageDimensions | undefined {
+  if (buffer.length < 30) return undefined;
+  if (buffer.subarray(0, 4).toString("ascii") !== "RIFF") return undefined;
+  if (buffer.subarray(8, 12).toString("ascii") !== "WEBP") return undefined;
+  const chunkType = buffer.subarray(12, 16).toString("ascii");
+  if (chunkType === "VP8X" && buffer.length >= 30) {
+    return {
+      width: 1 + buffer.readUIntLE(24, 3),
+      height: 1 + buffer.readUIntLE(27, 3),
+    };
+  }
+  if (chunkType === "VP8 " && buffer.length >= 30) {
+    return {
+      width: buffer.readUInt16LE(26) & 0x3fff,
+      height: buffer.readUInt16LE(28) & 0x3fff,
+    };
+  }
+  if (chunkType === "VP8L" && buffer.length >= 25) {
+    const bits = buffer.readUInt32LE(21);
+    return {
+      width: 1 + (bits & 0x3fff),
+      height: 1 + ((bits >> 14) & 0x3fff),
+    };
+  }
+  return undefined;
+}
+
+function countPdfPages(buffer: Buffer): number | undefined {
+  if (!buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) return undefined;
+  const text = buffer.toString("latin1");
+  const matches = text.match(/\/Type\s*\/Page\b/g);
+  return matches?.length || undefined;
+}
+
+function inspectImageDimensions(
+  buffer: Buffer,
+  sourcePath: string,
+): ImageDimensions | undefined {
+  const extension = getExtension(sourcePath);
+  if (extension === ".png") return readPngDimensions(buffer);
+  if (extension === ".gif") return readGifDimensions(buffer);
+  if (extension === ".jpg" || extension === ".jpeg")
+    return readJpegDimensions(buffer);
+  if (extension === ".webp") return readWebpDimensions(buffer);
+  return (
+    readPngDimensions(buffer) ||
+    readGifDimensions(buffer) ||
+    readJpegDimensions(buffer) ||
+    readWebpDimensions(buffer)
+  );
+}
+
+function isProbablyTextBuffer(buffer: Buffer): boolean {
+  if (buffer.length === 0) return true;
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  if (sample.includes(0)) return false;
+  let suspicious = 0;
+  for (const byte of sample) {
+    if (byte < 7 || (byte > 14 && byte < 32)) suspicious += 1;
+  }
+  return suspicious / sample.length < 0.05;
+}
+
+async function inspectFileContent(
+  options: InspectFileOptions,
+): Promise<string> {
+  const target = resolveAccessiblePath(options.path, options.confirmed);
+  const stats = await fs.stat(target);
+  if (!stats.isFile()) {
+    throw new Error(`仅支持检查普通文件: ${toDisplayPath(target)}`);
+  }
+  const buffer = await fs.readFile(target);
+  const extension = getExtension(target) || "<none>";
+  const mimeType = getMimeType(target);
+  const likelyText = isReadableTextFile(target) || isProbablyTextBuffer(buffer);
+  const imageDimensions = inspectImageDimensions(buffer, target);
+  const pdfPages =
+    getExtension(target) === ".pdf" ? countPdfPages(buffer) : undefined;
+  const suggestion = likelyText
+    ? "可直接使用 read_file 读取。"
+    : TEXT_EXTRACTION_EXTENSIONS.has(getExtension(target))
+      ? "可使用 import_external_file 的 extract_text 模式尝试提取文本。"
+      : "这是二进制文件；如需分析内容，请先转换为文本或使用 import_external_file 缓存。";
+
+  return JSON.stringify(
+    {
+      path: toDisplayPath(target),
+      sizeBytes: stats.size,
+      extension,
+      mimeType,
+      likelyText,
+      imageDimensions,
+      pdfPages,
+      suggestion,
+    },
+    null,
+    2,
+  );
 }
 
 function sanitizeFileName(fileName: string): string {
@@ -797,6 +1166,23 @@ const pathSchema = z.object({
   path: z.string(),
   confirmed: z.boolean().optional(),
 });
+const readFileSchema = z.object({
+  path: z.string(),
+  offset: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1).max(MAX_READ_FILE_LINE_LIMIT).optional(),
+  confirmed: z.boolean().optional(),
+});
+const inspectFileSchema = z.object({
+  path: z.string(),
+  confirmed: z.boolean().optional(),
+});
+const treeFilesSchema = z.object({
+  path: z.string().optional(),
+  maxDepth: z.number().int().min(0).max(MAX_TREE_MAX_DEPTH).optional(),
+  maxEntries: z.number().int().min(1).max(MAX_TREE_MAX_ENTRIES).optional(),
+  includeFiles: z.boolean().optional(),
+  confirmed: z.boolean().optional(),
+});
 const pathContentSchema = z.object({
   path: z.string(),
   content: z.string(),
@@ -814,6 +1200,13 @@ const replaceSchema = z.object({
   newText: z.string(),
   confirmed: z.boolean().optional(),
 });
+const replaceRangeSchema = z.object({
+  path: z.string(),
+  startLine: z.number().int().min(1),
+  endLine: z.number().int().min(1),
+  content: z.string(),
+  confirmed: z.boolean().optional(),
+});
 const importSchema = z.object({
   sourcePath: z.string().min(1, "sourcePath 不能为空"),
   destinationPath: z.string().optional(),
@@ -822,20 +1215,28 @@ const importSchema = z.object({
 });
 
 export {
+  buildTreeFilesOutput,
   cleanupExtractedText,
   columnLettersToIndex,
+  countPdfPages,
   decodeXmlEntities,
   extractOpenDocumentCellText,
   extractXmlTextRuns,
+  formatReadFileContent,
   getBackupRelativePath,
   getExtension,
+  getMimeType,
   getXmlTagText,
+  inspectFileContent,
+  inspectImageDimensions,
+  isProbablyTextBuffer,
   isReadableTextFile,
   normalizeImportMode,
   normalizeSlashes,
   parseSharedStrings,
   parseXlsxCellValue,
   parseXlsxSheetRows,
+  replaceLineRangeContent,
   resolveAccessiblePath,
   resolveWorkspacePath,
   sanitizeFileName,
@@ -869,17 +1270,79 @@ export const fileTools: ToolDefinition[] = [
     },
   }),
   createTool({
-    name: "read_file",
-    description: "读取文件内容，可在确认后访问工作区外文件",
-    schema: pathSchema,
+    name: "tree_files",
+    description:
+      "以目录树形式展示文件层级，适合理解项目结构；支持深度、条目数和是否包含文件",
+    schema: treeFilesSchema,
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" }, confirmed: { type: "boolean" } },
+      properties: {
+        path: { type: "string", description: "可选，起始目录，默认当前工作区" },
+        maxDepth: {
+          type: "number",
+          description: `可选，最大深度，范围 0-${MAX_TREE_MAX_DEPTH}，默认 ${DEFAULT_TREE_MAX_DEPTH}`,
+        },
+        maxEntries: {
+          type: "number",
+          description: `可选，最多展示条目数，范围 1-${MAX_TREE_MAX_ENTRIES}，默认 ${DEFAULT_TREE_MAX_ENTRIES}`,
+        },
+        includeFiles: {
+          type: "boolean",
+          description: "可选，是否展示文件，默认 true",
+        },
+        confirmed: { type: "boolean" },
+      },
+    },
+    async execute(input) {
+      return buildTreeFilesOutput({
+        path: input.path || ".",
+        maxDepth: input.maxDepth,
+        maxEntries: input.maxEntries,
+        includeFiles: input.includeFiles,
+        confirmed: input.confirmed,
+      });
+    },
+  }),
+  createTool({
+    name: "read_file",
+    description:
+      "读取文件内容，可用 offset/limit 按行分页，默认最多返回 2000 行；可在确认后访问工作区外文件",
+    schema: readFileSchema,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        offset: {
+          type: "number",
+          description: "可选，从第几行开始读取（0-based），默认 0",
+        },
+        limit: {
+          type: "number",
+          description: `可选，最多读取多少行，范围 1-${MAX_READ_FILE_LINE_LIMIT}，默认 ${DEFAULT_READ_FILE_LINE_LIMIT}`,
+        },
+        confirmed: { type: "boolean" },
+      },
       required: ["path"],
     },
     async execute(input) {
-      const target = resolveAccessiblePath(input.path, input.confirmed);
-      return await fs.readFile(target, "utf8");
+      return readFileContent(input);
+    },
+  }),
+  createTool({
+    name: "inspect_file",
+    description:
+      "只读检查文件元信息，返回大小、扩展名、MIME、是否像文本、图片尺寸和下一步建议；适合读取二进制/图片/PDF 前先判断",
+    schema: inspectFileSchema,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "要检查的文件路径" },
+        confirmed: { type: "boolean" },
+      },
+      required: ["path"],
+    },
+    async execute(input) {
+      return inspectFileContent(input);
     },
   }),
   createTool({
@@ -1053,6 +1516,38 @@ export const fileTools: ToolDefinition[] = [
       return {
         message: `已在锚点后插入内容: ${displayPath}`,
         diff: buildDiffEntry(displayPath, "锚点插入", source, updated),
+      };
+    },
+  }),
+  createTool({
+    name: "replace_range",
+    description:
+      "按 1-based 行号范围替换文件内容，适合 read_file 分页后做稳定局部编辑",
+    schema: replaceRangeSchema,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        startLine: {
+          type: "number",
+          description: "起始行号，1-based，包含该行",
+        },
+        endLine: { type: "number", description: "结束行号，1-based，包含该行" },
+        content: { type: "string", description: "用于替换指定行范围的新内容" },
+        confirmed: { type: "boolean" },
+      },
+      required: ["path", "startLine", "endLine", "content"],
+    },
+    async execute(input) {
+      const target = resolveAccessiblePath(input.path, input.confirmed);
+      const displayPath = toDisplayPath(target);
+      const source = await fs.readFile(target, "utf8");
+      const updated = replaceLineRangeContent(source, input);
+      await backupFile(target);
+      await fs.writeFile(target, updated, "utf8");
+      return {
+        message: `已替换 ${displayPath} 第 ${input.startLine}-${input.endLine} 行`,
+        diff: buildDiffEntry(displayPath, "行范围替换", source, updated),
       };
     },
   }),

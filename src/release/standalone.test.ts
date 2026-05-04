@@ -68,7 +68,9 @@ describe("buildStandaloneExecutable", () => {
     );
     expect(mockWriteFile).toHaveBeenCalledWith(
       "/tmp/sea-work/sea-config.json",
-      expect.stringContaining('"output": "/project/dist/standalone/mini-claude-code"'),
+      expect.stringContaining(
+        '"output": "/project/dist/standalone/mini-claude-code"',
+      ),
       "utf8",
     );
     expect(result.outputPath).toBe("/project/dist/standalone/mini-claude-code");
@@ -83,10 +85,14 @@ describe("buildStandaloneExecutable", () => {
     });
     mockExeca
       .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error("Error: sentinel NODE_SEA_FUSE_x not found"));
+      .mockRejectedValueOnce(
+        new Error("Error: sentinel NODE_SEA_FUSE_x not found"),
+      );
 
     const { buildStandaloneExecutable } = await import("./standalone.js");
 
-    await expect(buildStandaloneExecutable()).rejects.toThrow("当前 Node.js 可执行文件不支持 SEA standalone 构建");
+    await expect(buildStandaloneExecutable()).rejects.toThrow(
+      "当前 Node.js 可执行文件不支持 SEA standalone 构建",
+    );
   });
 });
