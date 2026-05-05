@@ -24,6 +24,38 @@ async function runGit(args: string[], cwd: string) {
   return result.stdout;
 }
 
+export type SandboxPatchApplyResult = {
+  patchPath: string;
+  checkOnly: boolean;
+  applied: boolean;
+  stdout: string;
+  stderr: string;
+};
+
+export async function applySandboxPatch(options: {
+  patchPath: string;
+  cwd?: string;
+  check?: boolean;
+}): Promise<SandboxPatchApplyResult> {
+  const cwd = options.cwd || getWorkspaceRoot();
+  const args = [
+    "apply",
+    ...(options.check ? ["--check"] : []),
+    options.patchPath,
+  ];
+  const result = await execa("git", args, { cwd, reject: false });
+  if ((result.exitCode ?? 1) !== 0) {
+    throw new Error(result.stderr || result.stdout || "git apply 执行失败");
+  }
+  return {
+    patchPath: options.patchPath,
+    checkOnly: Boolean(options.check),
+    applied: !options.check,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+}
+
 export async function runTaskInWorktreeSandbox(
   task: string,
   options?: {

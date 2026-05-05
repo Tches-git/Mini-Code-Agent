@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   normalizeProjectMemory,
   readProjectMemory,
+  sanitizeMemoryText,
   updateProjectMemory,
 } from "./memory.js";
 
@@ -31,6 +32,22 @@ describe("project memory", () => {
     ).toEqual({
       overview: "local agent",
       preferences: ["concise"],
+      commands: ["npm test"],
+    });
+  });
+
+  it("filters sensitive memory text", () => {
+    expect(sanitizeMemoryText("OPENAI_API_KEY=sk-secret")).toBe("");
+    expect(sanitizeMemoryText("use concise output")).toBe("use concise output");
+    expect(
+      normalizeProjectMemory({
+        overview: "token abc",
+        preferences: ["safe preference", "email test@example.com"],
+        commands: ["npm test"],
+      }),
+    ).toEqual({
+      overview: "",
+      preferences: ["safe preference"],
       commands: ["npm test"],
     });
   });

@@ -11,7 +11,10 @@ import {
   loadWorkspaceEnv,
   writeEnvTemplate,
 } from "../llm/env.js";
-import { runTaskInWorktreeSandbox } from "../release/worktree.js";
+import {
+  applySandboxPatch,
+  runTaskInWorktreeSandbox,
+} from "../release/worktree.js";
 import {
   logDiffHeader,
   logDiffLine,
@@ -434,6 +437,29 @@ program
       executableName: options.name,
     });
   });
+
+program
+  .command("sandbox:apply")
+  .description("预检或应用 sandbox 生成的 patch")
+  .argument("<patch>", "sandbox patch 文件路径")
+  .option("--check", "只预检 patch 是否可应用，不写入文件")
+  .option("--cwd <path>", "指定目标工作区目录")
+  .action(
+    async (patchPath: string, options: { check?: boolean; cwd?: string }) => {
+      applyWorkspaceRoot(options.cwd);
+      const result = await applySandboxPatch({
+        patchPath,
+        check: Boolean(options.check),
+        cwd: getWorkspaceRoot(),
+      });
+      logSection(
+        options.check ? "Sandbox Patch 预检完成" : "Sandbox Patch 已应用",
+      );
+      logKeyValue("Patch", result.patchPath);
+      logKeyValue("模式", result.checkOnly ? "check" : "apply");
+      logSuccess(result.applied ? "patch 已应用" : "patch 可应用");
+    },
+  );
 
 program
   .command("sessions")

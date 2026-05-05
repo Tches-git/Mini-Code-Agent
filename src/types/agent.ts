@@ -58,6 +58,8 @@ export type AgentTaskItem = {
   title: string;
   status: AgentTaskStatus;
   note?: string;
+  dependsOn?: number[];
+  blockedReason?: string;
 };
 
 export type AgentRunResult = {

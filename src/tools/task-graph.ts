@@ -17,6 +17,8 @@ export const taskGraphTools = [
             title: z.string().min(1).optional(),
             status: taskStatusSchema,
             note: z.string().optional(),
+            dependsOn: z.array(z.number().int().positive()).optional(),
+            blockedReason: z.string().optional(),
           }),
         )
         .min(1),
@@ -41,7 +43,16 @@ export const taskGraphTools = [
                 type: "string",
                 enum: ["todo", "doing", "done", "blocked"],
               },
-              note: { type: "string", description: "阻塞原因或补充说明" },
+              note: { type: "string", description: "补充说明" },
+              dependsOn: {
+                type: "array",
+                items: { type: "number" },
+                description: "该任务依赖的任务 ID 列表",
+              },
+              blockedReason: {
+                type: "string",
+                description: "结构化阻塞原因，仅 blocked 状态需要",
+              },
             },
             required: ["status"],
             additionalProperties: false,

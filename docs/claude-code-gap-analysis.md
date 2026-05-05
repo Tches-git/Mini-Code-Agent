@@ -343,8 +343,114 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 - 补 sandbox 交互式 apply、冲突处理和分支/PR 流程。
 - 为 `project_memory`、`semantic_find`、`task_batch`、sandbox patch 补 smoke benchmark。
 
+## 九、高阶能力补齐计划
+
+### 1. 智能长期记忆
+
+目标：让 `project_memory` 从手动读写升级为自动沉淀项目画像。
+
+计划：
+
+- 在每轮任务结束时，从 final summary、修改文件、验证命令中提取候选记忆。
+- 增加敏感信息过滤，避免保存 API key、token、邮箱等隐私内容。
+- 为记忆增加来源、置信度和更新时间，支持过期或覆盖旧信息。
+- 在新会话开始时，把项目画像、用户偏好、常用验证命令注入为简短上下文。
+
+验收：
+
+- 不保存密钥和明显隐私信息。
+- 恢复或新开会话时能读到项目偏好和常用命令。
+- focused tests 覆盖提取、去敏、去重、过期。
+
+### 2. 更强 Semantic Finder
+
+目标：让 `semantic_find` 从轻量路径/符号打分升级为更接近“按概念找代码”。
+
+计划：
+
+- 第一阶段：扩展 AST 索引，加入函数调用、类方法、导入导出链路、注释关键词。
+- 第二阶段：生成本地符号索引缓存，避免每次全量扫描。
+- 第三阶段：可选接入 embedding provider，支持自然语言概念匹配。
+- 返回结果增加“为什么相关”的解释：命中符号、调用链、引用关系、注释语义。
+
+验收：
+
+- 能定位“session restore”“approval policy”“auto validation”等行为相关文件。
+- 大仓库下使用缓存，避免明显变慢。
+- benchmark smoke 覆盖真实 agent 使用路径。
+
+### 3. Sandbox 交互式合并
+
+目标：让 worktree sandbox 不只是生成 patch，而是形成安全合并工作流。
+
+计划：
+
+- 增加 `sandbox apply` 或交互命令，展示 patch 摘要后确认应用。
+- 支持 `--check` 预检 patch 是否可应用。
+- 冲突时保留 sandbox、patch 和失败原因，给出手动处理步骤。
+- 后续支持从 sandbox 创建分支，甚至生成 PR 准备信息。
+
+验收：
+
+- patch 可预检、可应用、失败时有清晰提示。
+- 不自动覆盖用户本地未提交改动。
+- focused tests 覆盖 patch 生成、apply check、失败路径。
+
+### 4. 子代理治理
+
+目标：让 `task_batch` 从简单并发升级为可控的子任务调度层。
+
+计划：
+
+- 增加全局子任务预算：最大并发数、最大轮数、最大 token/输出长度。
+- 每个子任务返回结构化状态：done / failed / truncated。
+- 子任务失败不影响整批结果，主 Agent 能看到失败原因和可重试建议。
+- 增加结果缓存，重复只读分析可复用最近结果。
+
+验收：
+
+- 批量子任务中单个失败不会拖垮整批。
+- 输出包含每个子任务状态和耗用轮数。
+- tests 覆盖成功、失败、截断、缓存命中。
+
+### 5. 任务树高级能力
+
+目标：让任务树从状态展示升级为可恢复的执行计划。
+
+计划：
+
+- 增加任务依赖字段：`dependsOn`。
+- 增加结构化阻塞原因：`blockedReason`。
+- 支持 `/tasks` 展示依赖和阻塞原因。
+- 支持恢复会话后执行指定任务：`/execute-task <id>`。
+- 长任务中自动把 completed / blocked 状态写入 session。
+
+验收：
+
+- 恢复会话后任务树完整可见。
+- 可选择一个未完成任务继续执行。
+- tests 覆盖依赖、阻塞、恢复后继续执行。
+
+### 6. 专项 Benchmark 与发布门禁
+
+目标：把新能力纳入持续质量门禁。
+
+计划：
+
+- 增加 `memory-smoke`：验证项目记忆读写和安全约束。
+- 增加 `semantic-finder-smoke`：验证自然语言概念定位。
+- 增加 `subtask-batch-smoke`：验证并发只读子任务总结。
+- 增加 `sandbox-patch-smoke`：验证 sandbox patch 生成和提示。
+- 将稳定 smoke 纳入 `benchmark:smoke`，避免发布时回退。
+
+验收：
+
+- `npm run benchmark:smoke` 覆盖核心高阶能力。
+- release checklist 明确包含这些门禁。
+- CI 输出能看出失败任务和失败类型。
+
 如果继续推进，建议下一步先做：
 
-- `docs/claude-code-milestones.md`（里程碑拆分）
-- `/plan` + `/diff` + `/undo`
-- grep / glob / edit 工具分层
+- 智能长期记忆的去敏和自动提取。
+- `semantic_find` 的 AST 调用/注释索引。
+- sandbox patch apply/check 命令。

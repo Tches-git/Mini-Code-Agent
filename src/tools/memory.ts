@@ -12,6 +12,9 @@ export type ProjectMemory = {
   updatedAt?: string;
 };
 
+const SENSITIVE_MEMORY_PATTERN =
+  /(api[_-]?key|token|secret|password|bearer\s+[a-z0-9._-]+|sk-[a-z0-9_-]+|[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i;
+
 const EMPTY_MEMORY: ProjectMemory = {
   overview: "",
   preferences: [],
@@ -22,11 +25,14 @@ function getProjectMemoryPath(): string {
   return path.join(getWorkspaceStateDir(), "project-memory.json");
 }
 
+export function sanitizeMemoryText(value: string): string {
+  const compacted = value.replace(/\s+/g, " ").trim();
+  return SENSITIVE_MEMORY_PATTERN.test(compacted) ? "" : compacted;
+}
+
 function compactUnique(items: string[] = []): string[] {
   return Array.from(
-    new Set(
-      items.map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean),
-    ),
+    new Set(items.map(sanitizeMemoryText).filter(Boolean)),
   ).slice(0, 50);
 }
 
@@ -34,7 +40,10 @@ export function normalizeProjectMemory(
   input: Partial<ProjectMemory> = {},
 ): ProjectMemory {
   return {
-    overview: typeof input.overview === "string" ? input.overview.trim() : "",
+    overview:
+      typeof input.overview === "string"
+        ? sanitizeMemoryText(input.overview)
+        : "",
     preferences: compactUnique(input.preferences),
     commands: compactUnique(input.commands),
     ...(typeof input.updatedAt === "string"
