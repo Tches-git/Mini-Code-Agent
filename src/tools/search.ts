@@ -120,6 +120,25 @@ type ProjectMapBuildOptions = {
   scanLimit?: number;
 };
 
+type SemanticFinderOptions = {
+  concept: string;
+  path?: string;
+  maxResults?: number;
+  confirmed?: boolean;
+};
+
+type SemanticFinderResult = {
+  concept: string;
+  returnedResults: number;
+  results: Array<{
+    path: string;
+    score: number;
+    role: ProjectMapRole;
+    symbols: string[];
+    reasons: string[];
+  }>;
+};
+
 function shouldSkipEntry(entryName: string): boolean {
   return (
     IGNORED_DIRECTORIES.has(entryName) ||
@@ -1019,6 +1038,83 @@ function scoreProjectMapEntry(
   return score;
 }
 
+function tokenizeConcept(concept: string): string[] {
+  return Array.from(
+    new Set(
+      concept
+        .toLowerCase()
+        .split(/[^a-z0-9\u4e00-\u9fff]+/i)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 2),
+    ),
+  );
+}
+
+function scoreSemanticEntry(
+  entry: ProjectMapEntry,
+  tokens: string[],
+): {
+  score: number;
+  reasons: string[];
+} {
+  const haystacks = [
+    { label: "path", value: entry.path },
+    { label: "symbol", value: entry.symbols.join(" ") },
+    { label: "dependency", value: entry.dependsOn.join(" ") },
+    { label: "external", value: entry.externalDeps.join(" ") },
+    { label: "role", value: entry.role },
+  ];
+  let score = 0;
+  const reasons: string[] = [];
+  for (const token of tokens) {
+    for (const haystack of haystacks) {
+      if (haystack.value.toLowerCase().includes(token)) {
+        score +=
+          haystack.label === "symbol" ? 5 : haystack.label === "path" ? 4 : 2;
+        reasons.push(`${haystack.label} matches ${token}`);
+      }
+    }
+  }
+  score += Math.min(4, entry.importedBy.length);
+  score += entry.role === "entry" || entry.role === "core" ? 2 : 0;
+  return { score, reasons: Array.from(new Set(reasons)).slice(0, 8) };
+}
+
+async function semanticFind(
+  options: SemanticFinderOptions,
+): Promise<SemanticFinderResult> {
+  const maxResults = Number.isFinite(options.maxResults)
+    ? Math.max(1, Math.min(20, options.maxResults || 10))
+    : 10;
+  const tokens = tokenizeConcept(options.concept);
+  const entries = await buildProjectMap(
+    options.path || ".",
+    options.confirmed,
+    {
+      maxFiles: Math.max(40, maxResults * 4),
+      scanLimit: 240,
+    },
+  );
+  const ranked = entries
+    .map((entry) => ({ entry, ...scoreSemanticEntry(entry, tokens) }))
+    .filter((item) => item.score > 0)
+    .sort(
+      (a, b) => b.score - a.score || a.entry.path.localeCompare(b.entry.path),
+    )
+    .slice(0, maxResults);
+  return {
+    concept: options.concept,
+    returnedResults: ranked.length,
+    results: ranked.map((item) => ({
+      path: item.entry.path,
+      score: item.score,
+      role: item.entry.role,
+      symbols: item.entry.symbols,
+      reasons: item.reasons,
+    })),
+  };
+}
+
 async function buildProjectMap(
   targetPath: string,
   confirmed = false,
@@ -1155,6 +1251,8 @@ export {
   resolveProjectRelation,
   scoreMatch,
   scoreProjectMapEntry,
+  scoreSemanticEntry,
+  semanticFind,
   shouldSkipEntry,
   sortMatches,
 };
@@ -1400,6 +1498,42 @@ export const searchTools: ToolDefinition[] = [
         input.maxFiles,
       );
       return JSON.stringify(entries, null, 2);
+    },
+  }),
+  createTool({
+    name: "semantic_find",
+    description:
+      "按业务概念、行为或模块职责定位最相关源码文件；基于 project_map 的符号、路径、依赖和角色进行轻量语义打分",
+    schema: z.object({
+      concept: z.string().min(1, "概念不能为空"),
+      path: z.string().optional(),
+      maxResults: z.number().int().min(1).max(20).optional(),
+      confirmed: z.boolean().optional(),
+    }),
+    inputSchema: {
+      type: "object",
+      properties: {
+        concept: {
+          type: "string",
+          description:
+            "要定位的业务概念、行为或模块职责，例如 session restore、approval policy",
+        },
+        path: { type: "string", description: "可选，限定查找目录" },
+        maxResults: {
+          type: "number",
+          description: "可选，最多返回 1-20 个候选",
+        },
+        confirmed: {
+          type: "boolean",
+          description: "仅当用户已明确确认读取工作区外目录时才传 true",
+        },
+      },
+      required: ["concept"],
+      additionalProperties: false,
+    },
+    async execute(input) {
+      const result = await semanticFind(input);
+      return JSON.stringify(result, null, 2);
     },
   }),
 ];

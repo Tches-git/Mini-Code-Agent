@@ -505,12 +505,16 @@ export async function runTaskCommand(
       sandboxPath: string;
       kept: boolean;
       sandboxDiff: string;
+      patchPath?: string;
       mergeHint: string;
     };
     logSection("Sandbox");
     logKeyValue("Worktree", sandboxResult.sandboxPath);
     logKeyValue("保留", sandboxResult.kept ? "是" : "否");
     logKeyValue("Diff", sandboxResult.sandboxDiff);
+    if (sandboxResult.patchPath) {
+      logKeyValue("Patch", sandboxResult.patchPath);
+    }
     logHint(sandboxResult.mergeHint);
   }
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { ChatMessage } from "../types/agent.js";
+import type { AgentTaskItem, ChatMessage } from "../types/agent.js";
 import { getWorkspaceStateDir } from "../utils/runtime.js";
 import type { SummaryFocus } from "./summary.js";
 
@@ -34,6 +34,7 @@ export type SessionData = SessionSummary & {
   messages: ChatMessage[];
   summaryLines: string[];
   summaryFocus: SummaryFocus;
+  tasks?: AgentTaskItem[];
 };
 
 const SESSION_DATA_VERSION = 1;
@@ -176,6 +177,7 @@ export async function saveSession(data: {
   messages: ChatMessage[];
   summaryLines: string[];
   summaryFocus: SummaryFocus;
+  tasks?: AgentTaskItem[];
 }): Promise<string> {
   await ensureSessionDir();
 
@@ -200,6 +202,7 @@ export async function saveSession(data: {
     messages: data.messages,
     summaryLines: data.summaryLines,
     summaryFocus: data.summaryFocus,
+    tasks: data.tasks || existing?.tasks || [],
   };
 
   await fs.writeFile(
@@ -289,6 +292,7 @@ export async function loadSession(id?: string): Promise<SessionData | null> {
       messages: data.messages,
       summaryLines: data.summaryLines,
       summaryFocus: data.summaryFocus || { files: [], keywords: [] },
+      tasks: Array.isArray(data.tasks) ? data.tasks : [],
     };
   } catch {
     return null;

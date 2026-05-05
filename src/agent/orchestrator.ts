@@ -24,6 +24,7 @@ import {
 } from "./orchestrator-intent.js";
 import {
   clearPersistedSession,
+  loadPersistedSession,
   persistSession,
   restorePersistedSessionById,
 } from "./orchestrator-session.js";
@@ -105,7 +106,13 @@ export class AgentOrchestrator {
   }
 
   async restoreSession(id?: string): Promise<boolean> {
-    return restorePersistedSessionById(this.state, id);
+    const restored = await restorePersistedSessionById(this.state, id);
+    if (!restored) {
+      return false;
+    }
+    const data = await loadPersistedSession(id);
+    this.taskGraph.restore(data?.tasks || []);
+    return true;
   }
 
   get turnCount(): number {
@@ -207,7 +214,7 @@ export class AgentOrchestrator {
 
       if (response.toolCalls.length === 0) {
         this.taskGraph.completeActive();
-        await persistSession(this.state);
+        await persistSession(this.state, { tasks: this.taskGraph.list() });
         return {
           finalText: response.text || "已进入计划模式，但模型没有返回计划。",
           steps,
@@ -259,7 +266,7 @@ export class AgentOrchestrator {
     }
 
     this.taskGraph.blockActive();
-    await persistSession(this.state);
+    await persistSession(this.state, { tasks: this.taskGraph.list() });
     return {
       finalText: `计划模式达到最大只读探索轮数（${maxIterations} 轮），请缩小任务范围后重试。`,
       steps,
@@ -406,7 +413,7 @@ export class AgentOrchestrator {
               this.rememberUndoSnapshots(undoSnapshots.values());
             }
             this.taskGraph.blockActive();
-            await persistSession(this.state);
+            await persistSession(this.state, { tasks: this.taskGraph.list() });
             return {
               finalText:
                 "自动验证失败，且已达到最大自动修复轮数，请根据最后一次报错继续处理。",
@@ -423,7 +430,7 @@ export class AgentOrchestrator {
           this.rememberUndoSnapshots(undoSnapshots.values());
         }
         this.taskGraph.completeActive();
-        await persistSession(this.state);
+        await persistSession(this.state, { tasks: this.taskGraph.list() });
         return {
           finalText: response.text || "任务完成，但模型没有返回文本。",
           steps,
@@ -559,7 +566,7 @@ export class AgentOrchestrator {
       this.rememberUndoSnapshots(undoSnapshots.values());
     }
     this.taskGraph.blockActive();
-    await persistSession(this.state);
+    await persistSession(this.state, { tasks: this.taskGraph.list() });
     return {
       finalText: `达到当前任务的最大执行轮数（${maxIterations} 轮，${budgetReason}），请缩小任务范围后重试。`,
       steps,

@@ -39,10 +39,13 @@ export const READ_ONLY_TOOLS = new Set([
   "glob_files",
   "search_text",
   "project_map",
+  "semantic_find",
   "read_command_output",
   "import_external_file",
   "task",
+  "task_batch",
   "update_tasks",
+  "project_memory",
 ]);
 export const PARALLELIZABLE_TOOLS = new Set([
   "list_files",
@@ -52,7 +55,10 @@ export const PARALLELIZABLE_TOOLS = new Set([
   "glob_files",
   "search_text",
   "project_map",
+  "semantic_find",
   "read_command_output",
   "task",
+  "task_batch",
   "update_tasks",
+  "project_memory",
 ]);

@@ -1,3 +1,4 @@
+import type { AgentTaskItem } from "../types/agent.js";
 import type { OrchestratorState } from "./orchestrator-state.js";
 import { clearSession, loadSession, saveSession } from "./session.js";
 
@@ -15,13 +16,21 @@ export async function restorePersistedSessionById(
   return true;
 }
 
-export async function persistSession(state: OrchestratorState): Promise<void> {
+export async function loadPersistedSession(id?: string) {
+  return loadSession(id);
+}
+
+export async function persistSession(
+  state: OrchestratorState,
+  options?: { tasks?: AgentTaskItem[] },
+): Promise<void> {
   try {
     state.sessionId = await saveSession({
       id: state.sessionId,
       messages: state.messages,
       summaryLines: state.summaryLines,
       summaryFocus: state.summaryFocus,
+      tasks: options?.tasks,
     });
   } catch {
     // 保存失败时静默忽略，不影响正常执行

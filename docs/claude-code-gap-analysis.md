@@ -329,19 +329,19 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 
 三大短板已有第一版能力，但还需要继续补齐：
 
-1. **任务树还偏记录型**：目前只是粗粒度状态展示，还缺少模型可显式创建/更新任务、任务依赖和阻塞原因。
-2. **子代理还偏浅**：`task` 只读子代理目前只跑一轮 LLM，不能多轮使用工具深入探索，也没有结果缓存和并发预算。
-3. **Sandbox 还未形成合并流**：能在 worktree 里跑任务，但还缺 diff 汇总、选择性 apply/merge、失败时保留排查指引。
-4. **缺少模式化策略**：分析、编辑、重构、发布还没有不同的策略提示、工具偏好和执行预算。
-5. **长期记忆仍弱**：session 有摘要，但还没有跨会话项目记忆、用户偏好和常用验证命令学习。
-6. **没有真正 semantic finder**：现在是 glob/search/project_map，还没有语义级代码定位工具。
+1. **长期项目记忆已有雏形但还不智能**：`project_memory` 可跨 session 读写项目画像、偏好和常用命令，但还不会自动提炼、衰减或去敏。
+2. **Semantic finder 已有轻量版**：`semantic_find` 可按概念对 project_map 打分定位文件，但还不是 embedding / AST call graph 级语义检索。
+3. **Sandbox 自动合并仍需增强**：已有 patch 产物和 apply 提示，但还没有交互式选择 apply、冲突处理、分支/PR 流程。
+4. **子代理治理**：有 `task_batch`，但还没有全局并发预算、失败隔离报告、结果缓存。
+5. **任务树更高阶能力**：已持久化，但缺任务依赖、阻塞原因结构化、恢复后继续执行指定任务。
+6. **专项 benchmark**：新能力有单测/构建通过，但还缺专门 smoke benchmark 覆盖真实 agent 使用路径。
 
 下一轮补齐建议按低风险顺序推进：
 
-- 先补任务树显式更新工具和模式化策略提示。
-- 再把子代理扩展为有限多轮只读探索。
-- 然后补 sandbox diff 汇总与保留指引。
-- 最后推进长期记忆和 semantic finder。
+- 继续增强 `project_memory` 的自动摘要、去敏和过期策略。
+- 将 `semantic_find` 升级为 embedding / AST call graph 级检索。
+- 补 sandbox 交互式 apply、冲突处理和分支/PR 流程。
+- 为 `project_memory`、`semantic_find`、`task_batch`、sandbox patch 补 smoke benchmark。
 
 如果继续推进，建议下一步先做：
 

@@ -47,6 +47,27 @@ describe("session storage", () => {
     expect(loaded?.turnCount).toBe(1);
   });
 
+  it("persists task graph items with sessions", async () => {
+    const id = await saveSession({
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "修复问题" },
+      ],
+      summaryLines: [],
+      summaryFocus: { files: [], keywords: [] },
+      tasks: [
+        { id: 1, title: "修复问题", status: "done" },
+        { id: 2, title: "验证", status: "blocked", note: "测试失败" },
+      ],
+    });
+
+    const loaded = await loadSession(id);
+    expect(loaded?.tasks).toEqual([
+      { id: 1, title: "修复问题", status: "done" },
+      { id: 2, title: "验证", status: "blocked", note: "测试失败" },
+    ]);
+  });
+
   it("lists sessions in updated order", async () => {
     const firstId = await saveSession({
       messages: [

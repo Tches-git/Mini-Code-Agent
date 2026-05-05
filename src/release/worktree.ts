@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
@@ -10,6 +10,7 @@ export type SandboxRunResult = AgentRunResult & {
   sandboxPath: string;
   kept: boolean;
   sandboxDiff: string;
+  patchPath?: string;
   mergeHint: string;
 };
 
@@ -51,16 +52,29 @@ export async function runTaskInWorktreeSandbox(
       cwd: sandboxPath,
       reject: false,
     });
+    const patchResult = await execa("git", ["diff", "--binary"], {
+      cwd: sandboxPath,
+      reject: false,
+    });
     const sandboxDiff =
       sandboxDiffResult.stdout.trim() || "sandbox 没有文件差异。";
-    const mergeHint = options?.keep
-      ? `可在 ${sandboxPath} 检查改动；确认后用 git diff/apply 或手动合并回主工作区。`
-      : "sandbox 已清理；如需检查和合并，请下次加 --keep-sandbox。";
+    const patchPath = patchResult.stdout.trim()
+      ? path.join(sandboxParent, "sandbox.patch")
+      : undefined;
+    if (patchPath) {
+      await writeFile(patchPath, patchResult.stdout, "utf8");
+    }
+    const mergeHint = patchPath
+      ? `可用 git apply ${patchPath} 将 sandbox 改动应用回主工作区；建议先检查 patch 内容。`
+      : options?.keep
+        ? `可在 ${sandboxPath} 检查结果；当前没有可应用 patch。`
+        : "sandbox 已清理，且没有生成 patch。";
     return {
       ...result,
       sandboxPath,
       kept: Boolean(options?.keep),
       sandboxDiff,
+      patchPath,
       mergeHint,
     };
   } finally {

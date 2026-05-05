@@ -23,6 +23,24 @@ export class AgentTaskGraph {
     }
   }
 
+  restore(tasks: AgentTaskItem[] = []) {
+    this.tasks = tasks
+      .filter(
+        (task) =>
+          Number.isInteger(task.id) &&
+          task.id > 0 &&
+          normalizeTaskTitle(task.title) &&
+          ["todo", "doing", "done", "blocked"].includes(task.status),
+      )
+      .map((task) => ({
+        id: task.id,
+        title: normalizeTaskTitle(task.title),
+        status: task.status,
+        ...(task.note ? { note: normalizeTaskTitle(task.note) } : {}),
+      }));
+    this.nextId = Math.max(0, ...this.tasks.map((task) => task.id)) + 1;
+  }
+
   add(
     title: string,
     status: AgentTaskStatus = "todo",

@@ -207,6 +207,29 @@ export const benchmarkTasks: BenchmarkTask[] = [
       mustPassValidation: true,
     },
   },
+
+  {
+    id: "agent-orchestration-smoke",
+    title: "Agent 编排增强 smoke",
+    category: "read",
+    prompt:
+      "阅读 agent/task graph、subtask、memory、semantic_find 和 sandbox worktree 相关实现，说明 update_tasks、task_batch、project_memory、semantic_find、sandbox patch 分别解决什么短板。不要修改文件。",
+    description:
+      "覆盖任务树持久化、并发只读子任务、长期项目记忆、轻量 semantic finder 和 sandbox patch 提示等编排增强。",
+    expectation: {
+      finalTextIncludesAny: [
+        ["update_tasks", "任务"],
+        ["task_batch", "子任务"],
+        ["project_memory", "记忆"],
+        ["semantic_find", "语义"],
+        ["sandbox", "patch"],
+      ],
+      minToolCalls: 3,
+      maxDiffs: 0,
+      maxValidationRuns: 0,
+      mustPassValidation: true,
+    },
+  },
   {
     id: "edit-constant",
     title: "修改固定常量",
