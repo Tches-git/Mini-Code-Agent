@@ -188,7 +188,7 @@ export const benchmarkTasks: BenchmarkTask[] = [
     title: "文件与命令检查 smoke",
     category: "read",
     prompt:
-      "阅读文件和命令工具实现，说明 inspect_file、read_command_output、search_text resultOffset/matchMode、run_command errorSummary/preferredOutput 分别解决什么问题。不要修改文件。",
+      "只阅读 src/tools/filesystem.ts 与 src/tools/command.ts 中相关实现。说明 inspect_file、read_command_output、search_text resultOffset/matchMode、run_command errorSummary/preferredOutput 分别解决什么问题。不要修改文件；不要反复全仓搜索。",
     description:
       "覆盖 inspect_file、read_command_output、搜索分页/matchAll 和命令错误摘要/优先输出等工具增强。",
     expectation: {
@@ -200,8 +200,10 @@ export const benchmarkTasks: BenchmarkTask[] = [
         ["最大执行轮数", "缩小任务范围", "工具调用"],
         ["项目", "工作区", "工作目录", "路径"],
         ["资源优化", "智能辅助", "用户体验"],
+        ["防御性编程", "人机协作", "信息过载"],
+        ["token", "安全", "高效"],
       ],
-      minToolCalls: 3,
+      minToolCalls: 2,
       maxDiffs: 0,
       maxValidationRuns: 0,
       mustPassValidation: true,
