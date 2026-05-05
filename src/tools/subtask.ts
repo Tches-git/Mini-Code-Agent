@@ -20,7 +20,7 @@ const subtaskBatchSchema = z.object({
   tasks: z.array(subtaskSchema).min(1).max(4),
 });
 
-function getSubtaskTools(): ToolDefinition[] {
+export function getSubtaskTools(): ToolDefinition[] {
   return [
     ...fileTools,
     ...searchTools,
@@ -29,7 +29,7 @@ function getSubtaskTools(): ToolDefinition[] {
   ].filter((tool) => READ_ONLY_TOOLS.has(tool.name) && tool.name !== "task");
 }
 
-async function runReadOnlySubtask(input: z.infer<typeof subtaskSchema>) {
+export async function runReadOnlySubtask(input: z.infer<typeof subtaskSchema>) {
   const llm = new LlmClient();
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },

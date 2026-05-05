@@ -29,6 +29,8 @@ import {
   type SearchMatch,
   scoreMatch,
   scoreProjectMapEntry,
+  scoreSemanticEntry,
+  semanticFind,
   shouldSkipEntry,
   sortMatches,
 } from "./search.js";
@@ -710,5 +712,55 @@ describe("project map helpers", () => {
 
     expect(result.length).toBeLessThanOrEqual(3);
     expect(result.some((entry) => entry.path === "index.ts")).toBe(true);
+  });
+});
+
+describe("semantic finder", () => {
+  it("can rank files by concept", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "semantic-find-"));
+    await fs.mkdir(path.join(tempDir, "src", "agent"), { recursive: true });
+    await fs.mkdir(path.join(tempDir, "src", "cli"), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, "src", "agent", "session.ts"),
+      "export function restoreSession() {}\nexport function saveSession() {}\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "src", "cli", "index.ts"),
+      "export function runCli() {}\n",
+      "utf8",
+    );
+
+    const result = await semanticFind({
+      concept: "session restore",
+      path: tempDir,
+      confirmed: true,
+      maxResults: 2,
+    });
+
+    expect(result.returnedResults).toBeGreaterThan(0);
+    expect(result.results[0]?.path).toContain("session.ts");
+    expect(result.results[0]?.reasons.length).toBeGreaterThan(0);
+  });
+
+  it("semantic score explains matched reasons", () => {
+    const scored = scoreSemanticEntry(
+      {
+        path: "src/agent/session.ts",
+        symbols: ["restoreSession"],
+        relations: [],
+        dependsOn: [],
+        externalDeps: [],
+        importedBy: [],
+        references: [],
+        role: "core",
+        score: 0,
+      },
+      ["session"],
+    );
+    expect(scored.score).toBeGreaterThan(0);
+    expect(scored.reasons.some((reason) => reason.includes("session"))).toBe(
+      true,
+    );
   });
 });
