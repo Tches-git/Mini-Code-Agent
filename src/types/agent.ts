@@ -53,6 +53,14 @@ export type DiffEntry = {
 
 export type AgentTaskStatus = "todo" | "doing" | "done" | "blocked";
 
+export type AgentTaskHistoryEntry = {
+  at: string;
+  status: AgentTaskStatus;
+  note?: string;
+  failureCount?: number;
+  retrySuggestion?: string;
+};
+
 export type AgentTaskItem = {
   id: number;
   title: string;
@@ -60,6 +68,9 @@ export type AgentTaskItem = {
   note?: string;
   dependsOn?: number[];
   blockedReason?: string;
+  failureCount?: number;
+  retrySuggestion?: string;
+  history?: AgentTaskHistoryEntry[];
 };
 
 export type AgentRunResult = {

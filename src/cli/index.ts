@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { stdin as input, stdout as output } from "node:process";
+import * as readline from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { execa } from "execa";
@@ -13,6 +15,9 @@ import {
 } from "../llm/env.js";
 import {
   applySandboxPatch,
+  createSandboxBranch,
+  createSandboxPullRequestDraft,
+  listSandboxPatchHunks,
   runTaskInWorktreeSandbox,
 } from "../release/worktree.js";
 import {
@@ -108,6 +113,10 @@ function parsePositiveInteger(value: string): number {
     throw new Error(`无效的数字: ${value}`);
   }
   return parsed;
+}
+
+function collectOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
 }
 
 function resolveWorkspaceOption(workspace?: string): string {
@@ -402,6 +411,8 @@ program
   .option("--list", "列出所有 benchmark 任务")
   .option("--json", "以 JSON 输出结果")
   .option("--include-disabled", "包含默认禁用的 benchmark 草案任务")
+  .option("--mock", "使用本地 mock 结果执行 benchmark 门禁，不调用模型提供方")
+  .option("--environment-soft-fail", "将 provider/env 类失败记录为非阻塞软失败")
   .option("--isolation-mode <mode>", "隔离执行模式 (in_place/temp_copy)")
   .option("--keep-isolated-workspace", "保留隔离副本，便于排查 benchmark 问题")
   .action(
@@ -411,6 +422,8 @@ program
       list?: boolean;
       json?: boolean;
       includeDisabled?: boolean;
+      mock?: boolean;
+      environmentSoftFail?: boolean;
       isolationMode?: "in_place" | "temp_copy";
       keepIsolatedWorkspace?: boolean;
     }) => {
@@ -420,6 +433,8 @@ program
         list: Boolean(options.list),
         json: Boolean(options.json),
         includeDisabled: Boolean(options.includeDisabled),
+        mock: Boolean(options.mock),
+        environmentSoftFail: Boolean(options.environmentSoftFail),
         isolationMode: options.isolationMode,
         keepIsolatedWorkspace: Boolean(options.keepIsolatedWorkspace),
       });
@@ -443,13 +458,59 @@ program
   .description("预检或应用 sandbox 生成的 patch")
   .argument("<patch>", "sandbox patch 文件路径")
   .option("--check", "只预检 patch 是否可应用，不写入文件")
+  .option("--allow-dirty", "允许目标工作区存在未提交改动时应用 patch")
+  .option(
+    "--path <path>",
+    "只应用 patch 中指定路径，可重复传入",
+    collectOption,
+    [],
+  )
+  .option(
+    "--hunk <number>",
+    "只应用 patch 中指定序号的 hunk，可重复传入（按 patch 内 @@ 出现顺序从 1 开始）",
+    collectOption,
+    [],
+  )
+  .option("--interactive", "列出 patch hunks 并交互输入要应用的 hunk 序号")
   .option("--cwd <path>", "指定目标工作区目录")
   .action(
-    async (patchPath: string, options: { check?: boolean; cwd?: string }) => {
+    async (
+      patchPath: string,
+      options: {
+        check?: boolean;
+        allowDirty?: boolean;
+        path?: string[];
+        hunk?: string[];
+        interactive?: boolean;
+        cwd?: string;
+      },
+    ) => {
       applyWorkspaceRoot(options.cwd);
+      if (options.interactive) {
+        const hunks = await listSandboxPatchHunks(patchPath);
+        logSection("Patch Hunks");
+        for (const hunk of hunks) {
+          logKeyValue(`#${hunk.index} ${hunk.path}`, hunk.header);
+        }
+        const rl = readline.createInterface({ input, output });
+        try {
+          const answer = await rl.question(
+            "选择 hunk 序号（逗号分隔，空=全部）: ",
+          );
+          options.hunk = answer
+            .split(/[,\s]+/)
+            .map((item) => item.trim())
+            .filter(Boolean);
+        } finally {
+          rl.close();
+        }
+      }
       const result = await applySandboxPatch({
         patchPath,
         check: Boolean(options.check),
+        allowDirty: Boolean(options.allowDirty),
+        paths: options.path,
+        hunks: options.hunk?.map((item) => Number(item)),
         cwd: getWorkspaceRoot(),
       });
       logSection(
@@ -457,7 +518,60 @@ program
       );
       logKeyValue("Patch", result.patchPath);
       logKeyValue("模式", result.checkOnly ? "check" : "apply");
+      if (result.selectedPaths.length > 0) {
+        logKeyValue("选择路径", result.selectedPaths.join(", "));
+      }
+      if (result.selectedHunks.length > 0) {
+        logKeyValue("选择 hunk", result.selectedHunks.join(", "));
+      }
+      logKeyValue("摘要", result.patchSummary);
       logSuccess(result.applied ? "patch 已应用" : "patch 可应用");
+    },
+  );
+
+program
+  .command("sandbox:pr-draft")
+  .description("根据 sandbox patch 生成 PR 标题和描述草稿")
+  .argument("<patch>", "sandbox patch 文件路径")
+  .option("--cwd <path>", "指定源工作区目录")
+  .action(async (patchPath: string, options: { cwd?: string }) => {
+    applyWorkspaceRoot(options.cwd);
+    const result = await createSandboxPullRequestDraft({
+      patchPath,
+      cwd: getWorkspaceRoot(),
+    });
+    logSection("Sandbox PR 草稿");
+    logKeyValue("Title", result.title);
+    logKeyValue("摘要", result.patchSummary);
+    logKeyValue("Body", result.body);
+  });
+
+program
+  .command("sandbox:branch")
+  .description("基于 sandbox patch 创建隔离分支 worktree，便于继续检查或发 PR")
+  .argument("<patch>", "sandbox patch 文件路径")
+  .argument("<branch>", "要创建的分支名")
+  .option("--sandbox-path <path>", "指定新 worktree 路径；默认创建临时目录")
+  .option("--cwd <path>", "指定源工作区目录")
+  .action(
+    async (
+      patchPath: string,
+      branchName: string,
+      options: { sandboxPath?: string; cwd?: string },
+    ) => {
+      applyWorkspaceRoot(options.cwd);
+      const result = await createSandboxBranch({
+        patchPath,
+        branchName,
+        sandboxPath: options.sandboxPath,
+        cwd: getWorkspaceRoot(),
+      });
+      logSection("Sandbox 分支已创建");
+      logKeyValue("Branch", result.branchName);
+      logKeyValue("Worktree", result.sandboxPath);
+      logKeyValue("Patch", result.patchPath);
+      logKeyValue("摘要", result.patchSummary);
+      logHint("可在该 worktree 检查、提交，并按需发起 PR。主工作区未被修改。");
     },
   );
 

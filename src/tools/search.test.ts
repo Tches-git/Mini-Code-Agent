@@ -6,6 +6,7 @@ import {
   buildContext,
   buildProjectMap,
   dedupeSearchMatches,
+  extractAstCallsAndComments,
   extractExternalDependenciesWithAst,
   extractImportedSymbolsWithAst,
   extractRelationsWithAst,
@@ -13,8 +14,10 @@ import {
   extractTopLevelSymbolsWithAst,
   filterMatchesByMode,
   formatSearchTextResult,
+  getEmbeddingTokens,
   getProjectMapRole,
   getSearchLineMatcher,
+  getSemanticTokens,
   globFiles,
   globToRegExp,
   matchesGlobPattern,
@@ -595,8 +598,20 @@ describe("project map helpers", () => {
       {
         specifier: "./agent",
         symbols: ["defaultAgent", "createAgent", "runAgent"],
+        bindings: [
+          { imported: "default", local: "defaultAgent" },
+          { imported: "createAgent", local: "createAgent" },
+          { imported: "runAgent", local: "run" },
+        ],
       },
-      { specifier: "../utils/helper", symbols: ["helper", "format"] },
+      {
+        specifier: "../utils/helper",
+        symbols: ["helper", "format"],
+        bindings: [
+          { imported: "helper", local: "helper" },
+          { imported: "format", local: "print" },
+        ],
+      },
     ]);
   });
 
@@ -612,6 +627,29 @@ describe("project map helpers", () => {
       "typescript",
       "zod",
     ]);
+  });
+
+  it("AST 提取支持调用和注释信号", () => {
+    const content = [
+      "// restores persisted session state",
+      "export function run() {",
+      "  restorePersistedSessionById();",
+      "  taskGraph.restore();",
+      "}",
+    ].join("\n");
+    expect(extractAstCallsAndComments(content, "file.ts")).toEqual({
+      calls: ["restore", "restorePersistedSessionById"],
+      comments: ["restores persisted session state"],
+      localCallEdges: [
+        { caller: "run", callee: "restorePersistedSessionById", via: "local" },
+        {
+          caller: "run",
+          callee: "restore",
+          via: "local",
+          receiver: "taskGraph",
+        },
+      ],
+    });
   });
 
   it("非 TS/JS 文件仍回退到正则提取", () => {
@@ -683,8 +721,99 @@ describe("project map helpers", () => {
     expect(result[0]).toHaveProperty("externalDeps");
     expect(result[0]).toHaveProperty("importedBy");
     expect(result[0]).toHaveProperty("references");
+    expect(result[0]).toHaveProperty("calls");
+    expect(result[0]).toHaveProperty("comments");
+    expect(result[0]).toHaveProperty("callEdges");
     expect(result[0]).toHaveProperty("role");
     expect(result[0]).toHaveProperty("score");
+  });
+
+  it("project map 可以把导入函数调用边解析到跨文件目标", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "project-map-calls-"));
+    await fs.writeFile(
+      path.join(tempDir, "session.ts"),
+      "export function restoreSession() {}\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "runner.ts"),
+      [
+        "import { restoreSession } from './session';",
+        "export function run() { restoreSession(); }",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await buildProjectMap(tempDir, true, { maxFiles: 10 });
+    const runner = result.find((entry) => entry.path === "runner.ts");
+
+    expect(runner?.callEdges).toContainEqual({
+      caller: "run",
+      callee: "restoreSession",
+      via: "session.ts",
+    });
+  });
+
+  it("project map 可以通过重导出解析调用边目标", async () => {
+    tempDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "project-map-reexport-calls-"),
+    );
+    await fs.writeFile(
+      path.join(tempDir, "session.ts"),
+      "export function restoreSession() {}\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "index.ts"),
+      "export { restoreSession } from './session';\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "runner.ts"),
+      [
+        "import { restoreSession } from './index';",
+        "export function run() { restoreSession(); }",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await buildProjectMap(tempDir, true, { maxFiles: 10 });
+    const runner = result.find((entry) => entry.path === "runner.ts");
+
+    expect(runner?.callEdges).toContainEqual({
+      caller: "run",
+      callee: "restoreSession",
+      via: "index.ts",
+    });
+  });
+
+  it("project map 可以把命名空间属性调用边解析到跨文件目标", async () => {
+    tempDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "project-map-property-calls-"),
+    );
+    await fs.writeFile(
+      path.join(tempDir, "session.ts"),
+      "export function restore() {}\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "runner.ts"),
+      [
+        "import * as session from './session';",
+        "export function run() { session.restore(); }",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await buildProjectMap(tempDir, true, { maxFiles: 10 });
+    const runner = result.find((entry) => entry.path === "runner.ts");
+
+    expect(runner?.callEdges).toContainEqual({
+      caller: "run",
+      callee: "restore",
+      receiver: "session",
+      via: "session.ts",
+    });
   });
 
   it("project map 在大目录下遵守扫描上限并优先返回更关键文件", async () => {
@@ -740,7 +869,197 @@ describe("semantic finder", () => {
 
     expect(result.returnedResults).toBeGreaterThan(0);
     expect(result.results[0]?.path).toContain("session.ts");
+    expect(result.cache).toBe("miss");
+    expect(result.embedding).toBe("disabled");
+    expect(result.results[0]?.calls).toEqual([]);
+    expect(result.results[0]?.comments).toEqual([]);
+    expect(result.results[0]?.callEdges).toEqual([]);
     expect(result.results[0]?.reasons.length).toBeGreaterThan(0);
+  });
+
+  it("uses semantic index cache on repeated lookups", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "semantic-cache-"));
+    const stateDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "semantic-state-"),
+    );
+    process.env.MINI_CLAUDE_CODE_STATE_DIR = stateDir;
+    await fs.writeFile(
+      path.join(tempDir, "session.ts"),
+      "export function restoreSession() {}\n",
+      "utf8",
+    );
+
+    const first = await semanticFind({
+      concept: "session restore",
+      path: tempDir,
+      confirmed: true,
+      maxResults: 2,
+    });
+    const second = await semanticFind({
+      concept: "session restore",
+      path: tempDir,
+      confirmed: true,
+      maxResults: 2,
+    });
+
+    expect(first.cache).toBe("miss");
+    expect(second.cache).toBe("hit");
+    await fs.rm(stateDir, { recursive: true, force: true });
+    delete process.env.MINI_CLAUDE_CODE_STATE_DIR;
+  });
+
+  it("embedding fallback expands related concepts", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "semantic-embedding-"));
+    await fs.writeFile(
+      path.join(tempDir, "approval.ts"),
+      "export function approvalPolicy() {}\n",
+      "utf8",
+    );
+
+    const result = await semanticFind({
+      concept: "auth",
+      path: tempDir,
+      confirmed: true,
+      embedding: true,
+    });
+
+    expect(result.embedding).toBe("fallback");
+    expect(result.tokens).toContain("approval");
+    expect(result.results[0]?.path).toBe("approval.ts");
+  });
+
+  it("tokenizer handles camelCase, stems simple suffixes, and expands aliases", () => {
+    expect(getEmbeddingTokens("sessionRestores validated tasks")).toEqual(
+      expect.arrayContaining([
+        "session",
+        "restore",
+        "validated",
+        "validat",
+        "task",
+      ]),
+    );
+  });
+
+  it("uses optional embedding provider when configured", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "semantic-provider-"));
+    const providerPath = path.join(tempDir, "embedding-provider.mjs");
+    await fs.writeFile(
+      providerPath,
+      "export async function embedConcept() { return ['approval policy']; }\n",
+      "utf8",
+    );
+    process.env.SEMANTIC_EMBEDDING_PROVIDER = providerPath;
+
+    const result = await getSemanticTokens("auth", true);
+
+    expect(result.mode).toBe("provider");
+    expect(result.tokens).toEqual(
+      expect.arrayContaining(["auth", "approval", "policy"]),
+    );
+    delete process.env.SEMANTIC_EMBEDDING_PROVIDER;
+  });
+
+  it("uses vector embedding provider to rerank semantic results", async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "semantic-vector-"));
+    await fs.writeFile(
+      path.join(tempDir, "billing.ts"),
+      "export function reconcileInvoices() {}\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "theme.ts"),
+      "export function renderPalette() {}\n",
+      "utf8",
+    );
+    const providerPath = path.join(tempDir, "vector-provider.mjs");
+    await fs.writeFile(
+      providerPath,
+      `export async function embedVector(text) {
+  if (text.includes("customer intent") || text.includes("reconcileInvoices")) return [1, 0];
+  if (text.includes("renderPalette")) return [0, 1];
+  return [0, 0];
+}\n`,
+      "utf8",
+    );
+    process.env.SEMANTIC_EMBEDDING_PROVIDER = providerPath;
+
+    const result = await semanticFind({
+      concept: "customer intent",
+      path: tempDir,
+      confirmed: true,
+      embedding: true,
+      embeddingMode: "vector",
+      maxResults: 2,
+      useCache: false,
+    });
+
+    expect(result.embedding).toBe("provider");
+    expect(result.results[0]?.path).toBe("billing.ts");
+    expect(result.results[0]?.reasons).toContain("vector similarity 1.00");
+    delete process.env.SEMANTIC_EMBEDDING_PROVIDER;
+  });
+
+  it("caches vector embeddings for unchanged entries", async () => {
+    tempDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "semantic-vector-cache-"),
+    );
+    const sourceDir = path.join(tempDir, "src");
+    const stateDir = path.join(tempDir, "state");
+    const callsPath = path.join(tempDir, "calls.log");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sourceDir, "billing.ts"),
+      "export function reconcileInvoices() {}\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(sourceDir, "theme.ts"),
+      "export function renderPalette() {}\n",
+      "utf8",
+    );
+    const providerPath = path.join(tempDir, "cached-vector-provider.mjs");
+    await fs.writeFile(
+      providerPath,
+      `import { appendFileSync } from "node:fs";
+const callsPath = ${JSON.stringify(callsPath)};
+export async function embedVector(text) {
+  const kind = text.includes("customer intent")
+    ? "concept"
+    : text.includes("reconcileInvoices")
+      ? "billing"
+      : "theme";
+  appendFileSync(callsPath, kind + "\\n");
+  if (kind === "concept" || kind === "billing") return [1, 0];
+  return [0, 1];
+}\n`,
+      "utf8",
+    );
+    process.env.MINI_CLAUDE_CODE_STATE_DIR = stateDir;
+    process.env.SEMANTIC_EMBEDDING_PROVIDER = providerPath;
+
+    await semanticFind({
+      concept: "customer intent",
+      path: sourceDir,
+      confirmed: true,
+      embedding: true,
+      embeddingMode: "vector",
+      maxResults: 2,
+    });
+    await semanticFind({
+      concept: "customer intent",
+      path: sourceDir,
+      confirmed: true,
+      embedding: true,
+      embeddingMode: "vector",
+      maxResults: 2,
+    });
+
+    const calls = (await fs.readFile(callsPath, "utf8")).trim().split("\n");
+    expect(calls.filter((call) => call === "concept")).toHaveLength(2);
+    expect(calls.filter((call) => call === "billing")).toHaveLength(1);
+    expect(calls.filter((call) => call === "theme")).toHaveLength(1);
+    delete process.env.MINI_CLAUDE_CODE_STATE_DIR;
+    delete process.env.SEMANTIC_EMBEDDING_PROVIDER;
   });
 
   it("semantic score explains matched reasons", () => {
@@ -753,14 +1072,24 @@ describe("semantic finder", () => {
         externalDeps: [],
         importedBy: [],
         references: [],
+        calls: ["restorePersistedSessionById"],
+        comments: ["restore session state after restart"],
+        callEdges: [
+          {
+            caller: "restoreSession",
+            callee: "loadSession",
+            via: "src/agent/session.ts",
+          },
+        ],
         role: "core",
         score: 0,
       },
-      ["session"],
+      ["session", "restart"],
     );
     expect(scored.score).toBeGreaterThan(0);
     expect(scored.reasons.some((reason) => reason.includes("session"))).toBe(
       true,
     );
+    expect(scored.reasons).toContain("comment matches restart");
   });
 });

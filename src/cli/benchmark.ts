@@ -16,6 +16,8 @@ export async function runBenchmarkCommand(options: {
   includeDisabled?: boolean;
   isolationMode?: "in_place" | "temp_copy";
   keepIsolatedWorkspace?: boolean;
+  mock?: boolean;
+  environmentSoftFail?: boolean;
 }) {
   if (options.list) {
     logSection("可用 benchmark 任务");
@@ -38,6 +40,8 @@ export async function runBenchmarkCommand(options: {
       mode: options.isolationMode || "temp_copy",
       cleanup: !options.keepIsolatedWorkspace,
     },
+    mock: Boolean(options.mock),
+    environmentSoftFail: Boolean(options.environmentSoftFail),
   });
 
   if (options.json) {
@@ -45,7 +49,10 @@ export async function runBenchmarkCommand(options: {
     return;
   }
 
-  logSection("Benchmark 摘要");
+  logSection(options.mock ? "Benchmark 摘要（mock 模式）" : "Benchmark 摘要");
+  if (options.environmentSoftFail) {
+    logListItem("环境失败软处理已启用：provider/env 失败会记录但不阻塞门禁");
+  }
   logRenderedText(
     `
 | 字段 | 值 |
@@ -62,6 +69,7 @@ export async function runBenchmarkCommand(options: {
 | 平均自动修复次数 | ${report.summary.avgAutoFixes} |
 | 平均上下文裁剪量 | ${report.summary.avgContextTrimmed} |
 | 失败统计 | agent=${report.summary.failures.agent}, environment=${report.summary.failures.environment}, skip=${report.summary.failures.skip} |
+| 趋势 | ${report.summary.trend ? `${report.summary.trend.successRateDelta || 0}` : "无历史基线"} |
 `.trim(),
   );
   console.log();
@@ -78,6 +86,30 @@ export async function runBenchmarkCommand(options: {
         ),
       ].join("\n"),
     );
+    console.log();
+  }
+
+  if (report.summary.slowestTasks.length > 0) {
+    logSection("耗时 Top 任务");
+    logRenderedText(
+      [
+        "| 任务 | 耗时 | 工具调用 | 类型 |",
+        "| --- | --- | --- | --- |",
+        ...report.summary.slowestTasks.map(
+          (item) =>
+            `| ${item.id} | ${item.durationMs} ms | ${item.toolCalls} | ${item.failureType} |`,
+        ),
+      ].join("\n"),
+    );
+    console.log();
+  }
+
+  if (report.summary.releaseChecklist.length > 0) {
+    logSection("Release Checklist");
+    for (const item of report.summary.releaseChecklist) {
+      logStatusLine(item.ok ? "PASS" : "FAIL", item.label);
+      logListItem(item.detail, "    ");
+    }
     console.log();
   }
 

@@ -19,6 +19,7 @@ export const taskGraphTools = [
             note: z.string().optional(),
             dependsOn: z.array(z.number().int().positive()).optional(),
             blockedReason: z.string().optional(),
+            retrySuggestion: z.string().optional(),
           }),
         )
         .min(1),
@@ -52,6 +53,10 @@ export const taskGraphTools = [
               blockedReason: {
                 type: "string",
                 description: "结构化阻塞原因，仅 blocked 状态需要",
+              },
+              retrySuggestion: {
+                type: "string",
+                description: "任务阻塞或失败后的重试建议",
               },
             },
             required: ["status"],

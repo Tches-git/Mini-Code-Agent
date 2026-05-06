@@ -10,7 +10,11 @@ const mockRestoreSession = vi.hoisted(() => vi.fn());
 const mockRun = vi.hoisted(() => vi.fn());
 const mockPlan = vi.hoisted(() => vi.fn());
 const mockUndoLastRun = vi.hoisted(() => vi.fn());
+const mockExecuteTask = vi.hoisted(() => vi.fn());
+const mockRetryNextBlockedTask = vi.hoisted(() => vi.fn());
 const mockClearHistory = vi.hoisted(() => vi.fn());
+const mockReadProjectMemory = vi.hoisted(() => vi.fn());
+const mockEditProjectMemory = vi.hoisted(() => vi.fn());
 const mockLogAssistant = vi.hoisted(() => vi.fn());
 const mockLogBanner = vi.hoisted(() => vi.fn());
 const mockLogCard = vi.hoisted(() => vi.fn());
@@ -58,6 +62,17 @@ vi.mock("../llm/env.js", () => ({
   getRuntimeEnvInfo: mockGetRuntimeEnvInfo,
 }));
 
+let capturedReviewMemory:
+  | ((review: { diff: string }) => Promise<unknown>)
+  | null = null;
+const mockReviewProjectMemoryEdit = vi.hoisted(() => vi.fn());
+
+vi.mock("../tools/memory.js", () => ({
+  readProjectMemory: mockReadProjectMemory,
+  editProjectMemory: mockEditProjectMemory,
+  reviewProjectMemoryEdit: mockReviewProjectMemoryEdit,
+}));
+
 vi.mock("../utils/project-tooling.js", async () => {
   const actual = await vi.importActual<
     typeof import("../utils/project-tooling.js")
@@ -74,10 +89,15 @@ vi.mock("../agent/orchestrator.js", () => ({
     turnCount = 3;
     canUndoLastRun = false;
     undoStackDepth = 0;
+    constructor(options?: { onReviewMemory?: typeof capturedReviewMemory }) {
+      capturedReviewMemory = options?.onReviewMemory || null;
+    }
     restoreSession = mockRestoreSession;
     run = mockRun;
     plan = mockPlan;
     undoLastRun = mockUndoLastRun;
+    executeTask = mockExecuteTask;
+    retryNextBlockedTask = mockRetryNextBlockedTask;
     clearHistory = mockClearHistory;
   },
 }));
@@ -120,11 +140,14 @@ vi.mock("../utils/logger.js", () => ({
 
 import {
   collectMultilineInput,
+  completeSlashCommand,
   describeApprovalRequest,
+  getSlashCommandSuggestions,
   getWorkspaceDiffSummary,
   parseDiffCommandArgs,
   printInteractiveConfig,
   printInteractiveStatus,
+  printProjectMemory,
   printTaskSteps,
   printWorkspaceDiff,
   startInteractive,
@@ -156,7 +179,25 @@ describe("startInteractive", () => {
     mockRun.mockReset();
     mockPlan.mockReset();
     mockUndoLastRun.mockReset();
+    mockExecuteTask.mockReset();
+    mockRetryNextBlockedTask.mockReset();
     mockClearHistory.mockReset();
+    mockReadProjectMemory.mockReset().mockResolvedValue({
+      overview: "",
+      preferences: [],
+      commands: [],
+      facts: [],
+    });
+    mockEditProjectMemory.mockReset().mockResolvedValue({
+      overview: "",
+      preferences: [],
+      commands: [],
+      facts: [],
+    });
+    mockReviewProjectMemoryEdit.mockReset().mockResolvedValue({
+      proposed: { overview: "", preferences: [], commands: [], facts: [] },
+      diff: "--- a/project-memory.json\n+++ b/project-memory.json",
+    });
     mockLogAssistant.mockReset();
     mockLogBanner.mockReset();
     mockLogCard.mockReset();
@@ -185,6 +226,7 @@ describe("startInteractive", () => {
     mockGetAppDataDir
       .mockReset()
       .mockReturnValue("/tmp/home/.mini-claude-code");
+    capturedReviewMemory = null;
     vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
@@ -211,6 +253,23 @@ describe("startInteractive", () => {
     const result = await collectMultilineInput(rl, "第一行\\", () => "> ");
 
     expect(result).toBe("第一行\n第二行");
+  });
+
+  it("suggests slash commands for slash input", async () => {
+    expect(getSlashCommandSuggestions("/sta")).toEqual([
+      expect.stringContaining("/status"),
+    ]);
+    expect(completeSlashCommand("/sta")[0]).toContain("/status ");
+
+    mockQuestion
+      .mockResolvedValueOnce("/")
+      .mockRejectedValueOnce(new Error("stop"));
+    await startInteractive();
+
+    expect(mockLogCardList).toHaveBeenCalledWith(
+      "常用 slash 命令",
+      expect.arrayContaining([expect.stringContaining("/help")]),
+    );
   });
 
   it("/sessions prints recent sessions", async () => {
@@ -347,6 +406,35 @@ describe("startInteractive", () => {
 
     expect(mockRun).toHaveBeenCalledWith("修复构建");
     expect(mockLogAssistant).toHaveBeenCalledWith("显式执行完成。");
+  });
+
+  it("/execute-task continues a persisted task item", async () => {
+    mockExecuteTask.mockResolvedValue({
+      diffs: [],
+      finalText: "任务继续完成。",
+      steps: ["继续执行任务"],
+      tasks: [{ id: 2, title: "验证", status: "done" }],
+    });
+    mockQuestion
+      .mockResolvedValueOnce("/execute-task 2")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockExecuteTask).toHaveBeenCalledWith(2);
+    expect(mockLogCard).toHaveBeenCalledWith("任务 2 执行完成");
+    expect(mockLogAssistant).toHaveBeenCalledWith("任务继续完成。");
+  });
+
+  it("/execute-task validates task id", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/execute-task nope")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockExecuteTask).not.toHaveBeenCalled();
+    expect(mockLogError).toHaveBeenCalledWith("用法: /execute-task <id>");
   });
 
   it("parseDiffCommandArgs parses staged and path", () => {
@@ -496,6 +584,75 @@ describe("startInteractive", () => {
     );
   });
 
+  it("prints and edits project memory", async () => {
+    mockReadProjectMemory.mockResolvedValueOnce({
+      overview: "local agent",
+      preferences: ["short"],
+      commands: ["npm test"],
+      facts: [
+        {
+          id: "uses-ts",
+          text: "uses TypeScript",
+          source: "manual",
+          confidence: 0.8,
+        },
+      ],
+    });
+
+    await printProjectMemory();
+    await printProjectMemory("review remove uses-ts");
+    await printProjectMemory("remove uses-ts");
+    await printProjectMemory("review overview next overview");
+    await printProjectMemory("overview updated overview");
+    await printProjectMemory("clear");
+
+    expect(mockLogCard).toHaveBeenCalledWith("项目长期记忆");
+    expect(mockEditProjectMemory).toHaveBeenCalledWith({
+      removeFactIds: ["uses-ts"],
+    });
+    expect(mockReviewProjectMemoryEdit).toHaveBeenCalledWith({
+      removeFactIds: ["uses-ts"],
+    });
+    expect(mockReviewProjectMemoryEdit).toHaveBeenCalledWith({
+      overview: "next overview",
+    });
+    expect(mockEditProjectMemory).toHaveBeenCalledWith({
+      overview: "updated overview",
+    });
+    expect(mockEditProjectMemory).toHaveBeenCalledWith({ clear: true });
+  });
+
+  it("prompts for automatic memory review decisions", async () => {
+    mockQuestion.mockRejectedValueOnce(new Error("stop"));
+    await startInteractive();
+
+    mockQuestion.mockResolvedValueOnce("y");
+    await expect(capturedReviewMemory?.({ diff: "memory diff" })).resolves.toBe(
+      "accept",
+    );
+
+    mockQuestion.mockResolvedValueOnce("n");
+    await expect(capturedReviewMemory?.({ diff: "memory diff" })).resolves.toBe(
+      "reject",
+    );
+
+    mockQuestion.mockResolvedValueOnce("e").mockResolvedValueOnce("edited");
+    await expect(
+      capturedReviewMemory?.({ diff: "memory diff" }),
+    ).resolves.toEqual({ update: { overview: "edited" } });
+  });
+
+  it("/memory command opens project memory view", async () => {
+    mockQuestion
+      .mockResolvedValueOnce("/memory")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockReadProjectMemory).toHaveBeenCalled();
+    expect(mockLogCard).toHaveBeenCalledWith("项目长期记忆");
+  });
+
   it("/undo restores last agent changes", async () => {
     mockUndoLastRun.mockResolvedValue({
       finalText: "已撤销上一轮修改: src/a.ts",
@@ -525,6 +682,22 @@ describe("startInteractive", () => {
       diffs: [],
       finalText: "完成",
       steps: ["读取文件", "执行验证"],
+      tasks: [
+        {
+          id: 1,
+          title: "验证",
+          status: "blocked",
+          failureCount: 1,
+          history: [
+            {
+              at: "2026-05-06T00:00:00.000Z",
+              status: "blocked",
+              failureCount: 1,
+              retrySuggestion: "重试验证",
+            },
+          ],
+        },
+      ],
     });
     mockQuestion
       .mockResolvedValueOnce("修复问题")
@@ -534,10 +707,63 @@ describe("startInteractive", () => {
     await startInteractive();
 
     expect(mockLogSection).toHaveBeenCalledWith("任务步骤");
+    expect(mockLogCardList).toHaveBeenCalledWith("任务状态", [
+      expect.stringContaining("失败次数: 1"),
+    ]);
     expect(mockLogCardList).toHaveBeenCalledWith("上一轮步骤", [
       "**1.** 读取文件",
       "**2.** 执行验证",
     ]);
+  });
+
+  it("/tasks timeline prints task history", async () => {
+    mockRun.mockResolvedValue({
+      diffs: [],
+      finalText: "完成",
+      steps: [],
+      tasks: [
+        {
+          id: 1,
+          title: "验证",
+          status: "blocked",
+          history: [
+            {
+              at: "2026-05-06T00:00:00.000Z",
+              status: "blocked",
+              failureCount: 1,
+              retrySuggestion: "重试验证",
+            },
+          ],
+        },
+      ],
+    });
+    mockQuestion
+      .mockResolvedValueOnce("修复问题")
+      .mockResolvedValueOnce("/tasks timeline")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockLogCardList).toHaveBeenCalledWith("任务时间线", [
+      expect.stringContaining("重试验证"),
+    ]);
+  });
+
+  it("/retry-task retries first runnable blocked task", async () => {
+    mockRetryNextBlockedTask.mockResolvedValue({
+      diffs: [],
+      finalText: "重试完成",
+      steps: ["自动重试任务"],
+      tasks: [{ id: 1, title: "验证", status: "done" }],
+    });
+    mockQuestion
+      .mockResolvedValueOnce("/retry-task")
+      .mockRejectedValueOnce(new Error("stop"));
+
+    await startInteractive();
+
+    expect(mockRetryNextBlockedTask).toHaveBeenCalledTimes(1);
+    expect(mockLogCard).toHaveBeenCalledWith("任务自动重试完成");
   });
 
   it("printTaskSteps shows empty state", () => {

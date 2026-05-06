@@ -1,5 +1,11 @@
 import { LlmClient } from "../llm/client.js";
 import { getToolMap, tools } from "../tools/index.js";
+import {
+  getProjectMemoryContext,
+  type ProjectMemoryReviewHandler,
+  rememberProjectMemoryFromRun,
+  rememberProjectMemoryFromRunWithReview,
+} from "../tools/memory.js";
 import type {
   AgentEvent,
   AgentRunResult,
@@ -84,14 +90,17 @@ export class AgentOrchestrator {
   private state = new OrchestratorState(SYSTEM_PROMPT);
   private onEvent?: (event: AgentEvent) => void;
   private approvalManager: ApprovalManager;
+  private memoryReviewHandler?: ProjectMemoryReviewHandler;
   private undoStack: UndoSnapshot[][] = [];
   private taskGraph = new AgentTaskGraph();
 
   constructor(options?: {
     onEvent?: (event: AgentEvent) => void;
     onConfirmCommand?: (request: ApprovalRequest) => Promise<boolean>;
+    onReviewMemory?: ProjectMemoryReviewHandler;
   }) {
     this.onEvent = options?.onEvent;
+    this.memoryReviewHandler = options?.onReviewMemory;
     this.approvalManager = new ApprovalManager(options?.onConfirmCommand);
   }
 
@@ -135,6 +144,10 @@ export class AgentOrchestrator {
     return this.taskGraph.format();
   }
 
+  getTaskById(id: number) {
+    return this.taskGraph.get(id);
+  }
+
   private rememberUndoSnapshots(snapshots: Iterable<UndoSnapshot>) {
     const snapshotList = Array.from(snapshots);
     if (snapshotList.length > 0) {
@@ -152,6 +165,48 @@ export class AgentOrchestrator {
 
   private trimContextIfNeeded() {
     this.state.trimContextIfNeeded((event) => this.emit(event));
+  }
+
+  private async injectProjectMemoryContext(steps: string[]) {
+    const context = await getProjectMemoryContext();
+    this.state.messages = this.state.messages.filter(
+      (message, index) =>
+        index === 0 || !message.content?.startsWith("项目长期记忆："),
+    );
+    if (!context) return;
+    this.state.messages.splice(1, 0, { role: "assistant", content: context });
+    steps.push("已注入项目长期记忆上下文");
+  }
+
+  private async rememberRunOutcome(input: {
+    finalText?: string;
+    steps: string[];
+    modifiedPaths: Iterable<string>;
+  }) {
+    const validationCommands = input.steps
+      .map((step) => step.match(/^自动验证(?:[^:]*):\s*(.+)$/)?.[1]?.trim())
+      .filter((command): command is string => Boolean(command));
+    try {
+      const memoryInput = {
+        finalText: input.finalText,
+        steps: input.steps,
+        modifiedPaths: Array.from(input.modifiedPaths),
+        validationCommands,
+      };
+      const memory = this.memoryReviewHandler
+        ? await rememberProjectMemoryFromRunWithReview(
+            memoryInput,
+            this.memoryReviewHandler,
+          )
+        : await rememberProjectMemoryFromRun(memoryInput);
+      if (memory) {
+        input.steps.push(
+          `已更新项目长期记忆: ${memory.updatedAt || "unknown"}`,
+        );
+      }
+    } catch {
+      // 记忆更新失败不应影响主任务结果。
+    }
   }
 
   async undoLastRun(): Promise<AgentRunResult> {
@@ -189,6 +244,7 @@ export class AgentOrchestrator {
     this.taskGraph.reset(`计划：${userTask}`);
     setActiveTaskGraph(this.taskGraph);
     const steps: string[] = ["进入计划模式：仅允许只读探索，不执行文件修改"];
+    await this.injectProjectMemoryContext(steps);
     const diffs: DiffEntry[] = [];
     const readOnlyTools = tools.filter(
       (tool) =>
@@ -276,12 +332,93 @@ export class AgentOrchestrator {
   }
 
   async run(userTask: string): Promise<AgentRunResult> {
+    return this.runTask(userTask);
+  }
+
+  async executeTask(taskId: number): Promise<AgentRunResult> {
+    return this.executeTaskInternal(taskId, false);
+  }
+
+  async retryNextBlockedTask(): Promise<AgentRunResult> {
+    const task = this.taskGraph.getRunnableBlockedTask();
+    if (!task) {
+      return {
+        finalText: "没有可自动重试的阻塞任务。",
+        steps: ["未找到依赖已满足的阻塞任务"],
+        diffs: [],
+        tasks: this.taskGraph.list(),
+      };
+    }
+    return this.executeTaskInternal(task.id, true);
+  }
+
+  private async executeTaskInternal(
+    taskId: number,
+    automaticRetry: boolean,
+  ): Promise<AgentRunResult> {
+    const task = this.taskGraph.get(taskId);
+    if (!task) {
+      return {
+        finalText: `未找到任务 ${taskId}。`,
+        steps: [],
+        diffs: [],
+        tasks: this.taskGraph.list(),
+      };
+    }
+    if (task.status === "done") {
+      return {
+        finalText: `任务 ${taskId} 已完成，无需继续执行。`,
+        steps: [],
+        diffs: [],
+        tasks: this.taskGraph.list(),
+      };
+    }
+    const unmetDependencies = this.taskGraph.getUnmetDependencies(taskId);
+    if (unmetDependencies.length > 0) {
+      const dependencyList = unmetDependencies
+        .map((item) => `${item.id}:${item.title}`)
+        .join(", ");
+      this.taskGraph.update(
+        taskId,
+        "blocked",
+        task.note,
+        task.dependsOn,
+        `依赖任务未完成: ${dependencyList}`,
+        "先完成依赖任务，再继续执行当前任务。",
+      );
+      return {
+        finalText: `任务 ${taskId} 依赖未完成，暂不能执行: ${dependencyList}`,
+        steps: ["任务依赖门禁未通过"],
+        diffs: [],
+        tasks: this.taskGraph.list(),
+      };
+    }
+    const retryPrefix = automaticRetry ? "自动重试" : "继续执行";
+    return this.runTask(
+      `${retryPrefix}任务 ${task.id}: ${task.title}`,
+      task.id,
+    );
+  }
+
+  private async runTask(
+    userTask: string,
+    resumeTaskId?: number,
+  ): Promise<AgentRunResult> {
+    const previousFailureCount =
+      resumeTaskId !== undefined
+        ? this.taskGraph.get(resumeTaskId)?.failureCount || 0
+        : 0;
     const userMessage: ChatMessage = { role: "user", content: userTask };
     this.state.messages.push(userMessage);
     this.rememberMessageFocus(userMessage);
-    this.taskGraph.reset(userTask);
+    if (resumeTaskId !== undefined) {
+      this.taskGraph.update(resumeTaskId, "doing");
+    } else {
+      this.taskGraph.reset(userTask);
+    }
     setActiveTaskGraph(this.taskGraph);
     const steps: string[] = [];
+    await this.injectProjectMemoryContext(steps);
     const diffs: DiffEntry[] = [];
     const executionMode = getExecutionMode(userTask);
     const modeHint: ChatMessage = {
@@ -313,6 +450,9 @@ export class AgentOrchestrator {
     let budgetReason = executionBudget.reason;
     let hasExpandedReadOnlyBudget = false;
     steps.push(`执行预算: ${maxIterations} 轮（${budgetReason}）`);
+    if (resumeTaskId !== undefined && previousFailureCount > 0) {
+      steps.push(`任务 ${resumeTaskId} 第 ${previousFailureCount + 1} 次尝试`);
+    }
 
     for (let i = 0; i < maxIterations; i++) {
       if (pendingFixPrompt) {
@@ -412,11 +552,23 @@ export class AgentOrchestrator {
             if (hasModifiedFiles) {
               this.rememberUndoSnapshots(undoSnapshots.values());
             }
-            this.taskGraph.blockActive();
+            const finalText =
+              "自动验证失败，且已达到最大自动修复轮数，请根据最后一次报错继续处理。";
+            await this.rememberRunOutcome({
+              finalText,
+              steps,
+              modifiedPaths: new Set([
+                ...modifiedPaths,
+                ...diffs.map((diff) => diff.path),
+              ]),
+            });
+            this.taskGraph.blockActive(
+              resumeTaskId,
+              "自动验证失败且达到最大自动修复轮数",
+            );
             await persistSession(this.state, { tasks: this.taskGraph.list() });
             return {
-              finalText:
-                "自动验证失败，且已达到最大自动修复轮数，请根据最后一次报错继续处理。",
+              finalText,
               steps,
               diffs,
               tasks: this.taskGraph.list(),
@@ -429,10 +581,19 @@ export class AgentOrchestrator {
         if (hasModifiedFiles) {
           this.rememberUndoSnapshots(undoSnapshots.values());
         }
-        this.taskGraph.completeActive();
+        const finalText = response.text || "任务完成，但模型没有返回文本。";
+        await this.rememberRunOutcome({
+          finalText,
+          steps,
+          modifiedPaths: new Set([
+            ...modifiedPaths,
+            ...diffs.map((diff) => diff.path),
+          ]),
+        });
+        this.taskGraph.completeActive(resumeTaskId);
         await persistSession(this.state, { tasks: this.taskGraph.list() });
         return {
-          finalText: response.text || "任务完成，但模型没有返回文本。",
+          finalText,
           steps,
           diffs,
           tasks: this.taskGraph.list(),
@@ -565,10 +726,19 @@ export class AgentOrchestrator {
     if (hasModifiedFiles) {
       this.rememberUndoSnapshots(undoSnapshots.values());
     }
-    this.taskGraph.blockActive();
+    const finalText = `达到当前任务的最大执行轮数（${maxIterations} 轮，${budgetReason}），请缩小任务范围后重试。`;
+    await this.rememberRunOutcome({
+      finalText,
+      steps,
+      modifiedPaths: new Set([
+        ...modifiedPaths,
+        ...diffs.map((diff) => diff.path),
+      ]),
+    });
+    this.taskGraph.blockActive(resumeTaskId, "达到当前任务最大执行轮数");
     await persistSession(this.state, { tasks: this.taskGraph.list() });
     return {
-      finalText: `达到当前任务的最大执行轮数（${maxIterations} 轮，${budgetReason}），请缩小任务范围后重试。`,
+      finalText,
       steps,
       diffs,
       tasks: this.taskGraph.list(),

@@ -1,3 +1,5 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setWorkspaceRoot } from "../utils/runtime.js";
@@ -62,6 +64,8 @@ describe("runBenchmark report summary", () => {
       );
       expect(report.summary.skipReasons.length).toBeGreaterThanOrEqual(1);
       expect(report.summary.failures.skip).toBeGreaterThanOrEqual(0);
+      expect(report.summary.slowestTasks.length).toBeGreaterThan(0);
+      expect(report.summary.releaseChecklist.length).toBeGreaterThan(0);
       expect(report.tasks.every((task) => task.failureType)).toBe(true);
     },
     TEST_TIMEOUT_MS,
@@ -88,6 +92,93 @@ describe("runBenchmark report summary", () => {
       expect(report.tasks[0]?.failureType).toBe("environment");
       expect(report.tasks[0]?.passed).toBe(false);
       expect(report.summary.failures.environment).toBe(1);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "runs benchmark in mock mode without calling provider",
+    async () => {
+      const report = await runBenchmark({
+        taskIds: ["memory-smoke", "semantic-finder-smoke"],
+        mock: true,
+        isolation: {
+          mode: "temp_copy",
+          cleanup: true,
+        },
+      });
+
+      expect(mockChatStream).not.toHaveBeenCalled();
+      expect(report.summary.passed).toBe(2);
+      expect(report.summary.successRate).toBe(1);
+      expect(report.summary.releaseChecklist.every((item) => item.ok)).toBe(
+        true,
+      );
+      expect(report.tasks.every((task) => task.passed)).toBe(true);
+      expect(report.tasks[0]?.finalText).toContain("mock benchmark result");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "stores benchmark history and uses it for trend",
+    async () => {
+      const tempDir = await mkdtemp(
+        path.join(os.tmpdir(), "benchmark-history-"),
+      );
+      const outputPath = path.join(tempDir, "report.json");
+      try {
+        const first = await runBenchmark({
+          taskIds: ["memory-smoke"],
+          outputPath,
+          mock: true,
+          isolation: { mode: "temp_copy", cleanup: true },
+        });
+        const second = await runBenchmark({
+          taskIds: ["memory-smoke"],
+          outputPath,
+          mock: true,
+          isolation: { mode: "temp_copy", cleanup: true },
+        });
+        const history = JSON.parse(
+          await readFile(path.join(tempDir, "report.history.json"), "utf8"),
+        );
+
+        expect(first.summary.trend).toBeUndefined();
+        expect(second.summary.trend?.historyCount).toBe(1);
+        expect(history).toHaveLength(2);
+        expect(history[1]).toMatchObject({ successRate: 1, passed: 1 });
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "can soft-pass provider environment failures",
+    async () => {
+      mockChatStream.mockImplementationOnce(async () => {
+        throw new Error("APIConnectionError: Connection error");
+      });
+
+      const report = await runBenchmark({
+        taskIds: ["project-structure-overview"],
+        environmentSoftFail: true,
+        isolation: {
+          mode: "temp_copy",
+          cleanup: true,
+        },
+      });
+
+      expect(report.tasks[0]?.failureType).toBe("environment");
+      expect(report.tasks[0]?.passed).toBe(true);
+      expect(report.summary.passed).toBe(1);
+      expect(
+        report.summary.releaseChecklist.find((item) =>
+          item.label.includes("environment"),
+        )?.ok,
+      ).toBe(true);
     },
     TEST_TIMEOUT_MS,
   );

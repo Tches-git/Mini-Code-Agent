@@ -1,10 +1,12 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { execa } from "execa";
 import ts from "typescript";
 import { z } from "zod";
 import type { ToolDefinition } from "../types/agent.js";
-import { getWorkspaceRoot } from "../utils/runtime.js";
+import { getWorkspaceRoot, getWorkspaceStateDir } from "../utils/runtime.js";
 import { createTool } from "./create-tool.js";
 
 const MAX_MATCHES = 50;
@@ -103,6 +105,13 @@ type ProjectMapReference = {
   importedBy: string[];
 };
 
+type ProjectCallEdge = {
+  caller: string;
+  callee: string;
+  via: string;
+  receiver?: string;
+};
+
 type ProjectMapEntry = {
   path: string;
   symbols: string[];
@@ -111,6 +120,9 @@ type ProjectMapEntry = {
   externalDeps: string[];
   importedBy: string[];
   references: ProjectMapReference[];
+  calls: string[];
+  comments: string[];
+  callEdges: ProjectCallEdge[];
   role: ProjectMapRole;
   score: number;
 };
@@ -118,6 +130,7 @@ type ProjectMapEntry = {
 type ProjectMapBuildOptions = {
   maxFiles?: number;
   scanLimit?: number;
+  useCache?: boolean;
 };
 
 type SemanticFinderOptions = {
@@ -125,19 +138,90 @@ type SemanticFinderOptions = {
   path?: string;
   maxResults?: number;
   confirmed?: boolean;
+  useCache?: boolean;
+  embedding?: boolean;
+  embeddingMode?: "tokens" | "vector";
 };
 
 type SemanticFinderResult = {
   concept: string;
   returnedResults: number;
+  cache: "hit" | "miss" | "disabled";
+  embedding: "disabled" | "fallback" | "provider";
+  tokens: string[];
   results: Array<{
     path: string;
     score: number;
     role: ProjectMapRole;
     symbols: string[];
+    calls: string[];
+    comments: string[];
+    callEdges: ProjectCallEdge[];
     reasons: string[];
   }>;
 };
+
+type ProjectMapCachePayload = {
+  version: number;
+  root: string;
+  signature: string;
+  entries: ProjectMapEntry[];
+};
+
+type SemanticVectorCachePayload = {
+  version: number;
+  root: string;
+  provider: string;
+  entries: Record<string, { textHash: string; vector: number[] }>;
+};
+
+type SemanticEmbeddingProvider = (concept: string) => Promise<string[]>;
+type SemanticVectorProvider = (text: string) => Promise<number[]>;
+
+type ImportBinding = {
+  imported: string;
+  local: string;
+};
+
+type SemanticEmbeddingModule = {
+  embedConcept?: SemanticEmbeddingProvider;
+  embedVector?: SemanticVectorProvider;
+  default?:
+    | SemanticEmbeddingProvider
+    | {
+        embedConcept?: SemanticEmbeddingProvider;
+        embedVector?: SemanticVectorProvider;
+      };
+};
+
+let lastProjectMapCacheStatus: "hit" | "miss" | "disabled" = "disabled";
+
+function getProjectMapCachePath(targetPath: string): string {
+  const key = createHash("sha1").update(path.resolve(targetPath)).digest("hex");
+  return path.join(getWorkspaceStateDir(), "semantic-index", `${key}.json`);
+}
+
+function getVectorCachePath(targetPath: string, providerId: string): string {
+  const key = createHash("sha1")
+    .update(`${path.resolve(targetPath)}\n${providerId}`)
+    .digest("hex");
+  return path.join(getWorkspaceStateDir(), "semantic-vectors", `${key}.json`);
+}
+
+function hashText(text: string): string {
+  return createHash("sha1").update(text).digest("hex");
+}
+
+async function getProjectMapSignature(files: string[]): Promise<string> {
+  const parts: string[] = [];
+  for (const file of files) {
+    try {
+      const stat = await fs.stat(file);
+      parts.push(`${file}:${stat.size}:${Math.trunc(stat.mtimeMs)}`);
+    } catch {}
+  }
+  return createHash("sha1").update(parts.sort().join("\n")).digest("hex");
+}
 
 function shouldSkipEntry(entryName: string): boolean {
   return (
@@ -892,12 +976,16 @@ function extractRelationsWithAst(
 function extractImportedSymbolsWithAst(
   content: string,
   filePath = "file.ts",
-): Array<{ specifier: string; symbols: string[] }> {
+): Array<{ specifier: string; symbols: string[]; bindings: ImportBinding[] }> {
   const sourceFile = parseSourceFile(content, filePath);
   if (!sourceFile) {
     return [];
   }
-  const imports: Array<{ specifier: string; symbols: string[] }> = [];
+  const imports: Array<{
+    specifier: string;
+    symbols: string[];
+    bindings: ImportBinding[];
+  }> = [];
 
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement)) {
@@ -906,32 +994,131 @@ function extractImportedSymbolsWithAst(
         .slice(1, -1);
       if (!specifier.startsWith(".")) continue;
       const symbols: string[] = [];
+      const bindings: ImportBinding[] = [];
       const clause = statement.importClause;
       if (clause?.name) {
         symbols.push(clause.name.text);
+        bindings.push({ imported: "default", local: clause.name.text });
       }
       if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
         for (const element of clause.namedBindings.elements) {
-          symbols.push(element.propertyName?.text || element.name.text);
+          const imported = element.propertyName?.text || element.name.text;
+          symbols.push(imported);
+          bindings.push({ imported, local: element.name.text });
         }
+      } else if (
+        clause?.namedBindings &&
+        ts.isNamespaceImport(clause.namedBindings)
+      ) {
+        bindings.push({ imported: "*", local: clause.namedBindings.name.text });
       }
-      imports.push({ specifier, symbols });
+      imports.push({ specifier, symbols, bindings });
     } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
       const specifier = statement.moduleSpecifier
         .getText(sourceFile)
         .slice(1, -1);
       if (!specifier.startsWith(".")) continue;
       const symbols: string[] = [];
+      const bindings: ImportBinding[] = [];
       if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
         for (const element of statement.exportClause.elements) {
-          symbols.push(element.propertyName?.text || element.name.text);
+          const imported = element.propertyName?.text || element.name.text;
+          symbols.push(imported);
+          bindings.push({ imported, local: element.name.text });
         }
       }
-      imports.push({ specifier, symbols });
+      imports.push({ specifier, symbols, bindings });
     }
   }
 
   return imports;
+}
+
+function extractAstCallsAndComments(
+  content: string,
+  filePath = "file.ts",
+): { calls: string[]; comments: string[]; localCallEdges: ProjectCallEdge[] } {
+  const sourceFile = parseSourceFile(content, filePath);
+  const comments = Array.from(
+    content.matchAll(/\/\/\s*(.+)|\/\*([\s\S]*?)\*\//g),
+  )
+    .map((match) => (match[1] || match[2] || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 12);
+  if (!sourceFile) {
+    return { calls: [], comments, localCallEdges: [] };
+  }
+
+  const calls = new Set<string>();
+  const localCallEdges: ProjectCallEdge[] = [];
+  let currentCaller = "<module>";
+  const addCall = (name: string | undefined) => {
+    if (!name) return;
+    calls.add(name);
+  };
+  const getFunctionName = (node: ts.Node): string | null => {
+    if (
+      (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) &&
+      node.name
+    ) {
+      return node.name.text;
+    }
+    if (ts.isMethodDeclaration(node) && ts.isIdentifier(node.name)) {
+      return node.name.text;
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isArrowFunction(node.initializer) ||
+        ts.isFunctionExpression(node.initializer))
+    ) {
+      return node.name.text;
+    }
+    return null;
+  };
+  const getCallInfo = (
+    node: ts.CallExpression,
+  ): { name: string; receiver?: string } | null => {
+    const expression = node.expression;
+    if (ts.isIdentifier(expression)) return { name: expression.text };
+    if (ts.isPropertyAccessExpression(expression)) {
+      return {
+        name: expression.name.text,
+        receiver: ts.isIdentifier(expression.expression)
+          ? expression.expression.text
+          : undefined,
+      };
+    }
+    return null;
+  };
+  const visit = (node: ts.Node) => {
+    const nextCaller = getFunctionName(node);
+    const previousCaller = currentCaller;
+    if (nextCaller) currentCaller = nextCaller;
+    if (ts.isCallExpression(node)) {
+      const callInfo = getCallInfo(node);
+      addCall(callInfo?.name);
+      if (callInfo) {
+        localCallEdges.push({
+          caller: currentCaller,
+          callee: callInfo.name,
+          via: "local",
+          ...(callInfo.receiver ? { receiver: callInfo.receiver } : {}),
+        });
+      }
+    }
+    if (calls.size < 40) {
+      ts.forEachChild(node, visit);
+    }
+    currentCaller = previousCaller;
+  };
+  visit(sourceFile);
+  return {
+    calls: Array.from(calls).sort().slice(0, 40),
+    comments,
+    localCallEdges: localCallEdges.slice(0, 80),
+  };
 }
 
 function extractExternalDependenciesWithAst(
@@ -1039,15 +1226,214 @@ function scoreProjectMapEntry(
 }
 
 function tokenizeConcept(concept: string): string[] {
+  const expanded = concept
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase();
+  const rawTokens = expanded
+    .split(/[^a-z0-9\u4e00-\u9fff]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+  const stemmedTokens = rawTokens.flatMap((token) => [
+    token,
+    token.endsWith("s") && token.length > 3 ? token.slice(0, -1) : "",
+    token.endsWith("ing") && token.length > 5 ? token.slice(0, -3) : "",
+    token.endsWith("ed") && token.length > 4 ? token.slice(0, -2) : "",
+  ]);
+  return Array.from(new Set(stemmedTokens.filter(Boolean)));
+}
+
+function getEmbeddingTokens(concept: string): string[] {
+  const aliases: Record<string, string[]> = {
+    auth: ["approval", "policy", "token", "login"],
+    restore: ["resume", "session", "load"],
+    resume: ["restore", "session", "load"],
+    validation: ["test", "lint", "build", "diagnostics", "check"],
+    sandbox: ["worktree", "patch", "apply", "branch"],
+    memory: ["remember", "summary", "preference", "context"],
+    approval: ["confirm", "policy", "guard", "permission"],
+    command: ["shell", "bash", "run", "execute"],
+    task: ["todo", "plan", "graph", "subtask"],
+  };
   return Array.from(
     new Set(
-      concept
-        .toLowerCase()
-        .split(/[^a-z0-9\u4e00-\u9fff]+/i)
-        .map((token) => token.trim())
-        .filter((token) => token.length >= 2),
+      tokenizeConcept(concept).flatMap((token) => [
+        token,
+        ...(aliases[token] || []),
+      ]),
     ),
   );
+}
+
+async function importSemanticEmbeddingModule(): Promise<SemanticEmbeddingModule | null> {
+  const providerPath = process.env.SEMANTIC_EMBEDDING_PROVIDER?.trim();
+  if (!providerPath) return null;
+  try {
+    const modulePath = path.isAbsolute(providerPath)
+      ? pathToFileURL(providerPath).href
+      : providerPath;
+    return (await import(modulePath)) as SemanticEmbeddingModule;
+  } catch {
+    return null;
+  }
+}
+
+function getVectorProvider(
+  mod: SemanticEmbeddingModule | null,
+): SemanticVectorProvider | null {
+  if (!mod) return null;
+  if (mod.embedVector) return mod.embedVector;
+  if (typeof mod.default === "object" && mod.default?.embedVector) {
+    return mod.default.embedVector;
+  }
+  return null;
+}
+
+async function getProviderEmbeddingTokens(
+  concept: string,
+): Promise<string[] | null> {
+  try {
+    const mod = await importSemanticEmbeddingModule();
+    const provider =
+      mod?.embedConcept ||
+      (typeof mod?.default === "function"
+        ? mod.default
+        : mod?.default?.embedConcept);
+    if (!provider) return null;
+    const tokens = await provider(concept);
+    return Array.isArray(tokens) ? tokens.flatMap(tokenizeConcept) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getSemanticTokens(
+  concept: string,
+  embedding?: boolean,
+): Promise<{ tokens: string[]; mode: SemanticFinderResult["embedding"] }> {
+  if (!embedding) return { tokens: tokenizeConcept(concept), mode: "disabled" };
+  const providerTokens = await getProviderEmbeddingTokens(concept);
+  if (providerTokens?.length) {
+    return {
+      tokens: Array.from(
+        new Set([...tokenizeConcept(concept), ...providerTokens]),
+      ),
+      mode: "provider",
+    };
+  }
+  return { tokens: getEmbeddingTokens(concept), mode: "fallback" };
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  const length = Math.min(a.length, b.length);
+  if (length === 0) return 0;
+  let dot = 0;
+  let aNorm = 0;
+  let bNorm = 0;
+  for (let index = 0; index < length; index++) {
+    dot += a[index] * b[index];
+    aNorm += a[index] * a[index];
+    bNorm += b[index] * b[index];
+  }
+  if (aNorm === 0 || bNorm === 0) return 0;
+  return dot / (Math.sqrt(aNorm) * Math.sqrt(bNorm));
+}
+
+function getEntryVectorText(entry: ProjectMapEntry): string {
+  return [
+    entry.path,
+    entry.role,
+    entry.symbols.join(" "),
+    entry.calls.join(" "),
+    entry.comments.join(" "),
+    entry.dependsOn.join(" "),
+    entry.importedBy.join(" "),
+    entry.references.map((ref) => ref.symbol).join(" "),
+  ].join(" ");
+}
+
+async function readVectorCache(
+  cachePath: string,
+  targetPath: string,
+  providerId: string,
+): Promise<SemanticVectorCachePayload> {
+  try {
+    const cached = JSON.parse(
+      await fs.readFile(cachePath, "utf8"),
+    ) as SemanticVectorCachePayload;
+    if (
+      cached.version === 1 &&
+      cached.root === path.resolve(targetPath) &&
+      cached.provider === providerId
+    ) {
+      return cached;
+    }
+  } catch {}
+  return {
+    version: 1,
+    root: path.resolve(targetPath),
+    provider: providerId,
+    entries: {},
+  };
+}
+
+async function writeVectorCache(
+  cachePath: string,
+  cache: SemanticVectorCachePayload,
+): Promise<void> {
+  try {
+    await fs.mkdir(path.dirname(cachePath), { recursive: true });
+    await fs.writeFile(cachePath, JSON.stringify(cache, null, 2), "utf8");
+  } catch {}
+}
+
+async function scoreVectorEntries(
+  concept: string,
+  entries: ProjectMapEntry[],
+  options?: { targetPath?: string; useCache?: boolean },
+): Promise<Map<string, { score: number; reason: string }> | null> {
+  const providerPath = process.env.SEMANTIC_EMBEDDING_PROVIDER?.trim();
+  const provider = getVectorProvider(await importSemanticEmbeddingModule());
+  if (!provider) return null;
+  try {
+    const conceptVector = await provider(concept);
+    const scored = new Map<string, { score: number; reason: string }>();
+    const targetPath = options?.targetPath || ".";
+    const providerId = providerPath || "default";
+    const cachePath = getVectorCachePath(targetPath, providerId);
+    const useCache = options?.useCache !== false;
+    const cache = useCache
+      ? await readVectorCache(cachePath, targetPath, providerId)
+      : null;
+    let cacheChanged = false;
+
+    for (const entry of entries) {
+      const text = getEntryVectorText(entry);
+      const textHash = hashText(text);
+      const cachedEntry = cache?.entries[entry.path];
+      const vector =
+        cachedEntry?.textHash === textHash
+          ? cachedEntry.vector
+          : await provider(text);
+      if (cache && cachedEntry?.textHash !== textHash) {
+        cache.entries[entry.path] = { textHash, vector };
+        cacheChanged = true;
+      }
+      const similarity = cosineSimilarity(conceptVector, vector);
+      if (similarity > 0) {
+        scored.set(entry.path, {
+          score: similarity * 20,
+          reason: `vector similarity ${similarity.toFixed(2)}`,
+        });
+      }
+    }
+    if (cache && cacheChanged) {
+      await writeVectorCache(cachePath, cache);
+    }
+    return scored;
+  } catch {
+    return null;
+  }
 }
 
 function scoreSemanticEntry(
@@ -1062,6 +1448,18 @@ function scoreSemanticEntry(
     { label: "symbol", value: entry.symbols.join(" ") },
     { label: "dependency", value: entry.dependsOn.join(" ") },
     { label: "external", value: entry.externalDeps.join(" ") },
+    { label: "call", value: entry.calls.join(" ") },
+    { label: "comment", value: entry.comments.join(" ") },
+    {
+      label: "reference",
+      value: entry.references.map((ref) => ref.symbol).join(" "),
+    },
+    {
+      label: "callGraph",
+      value: entry.callEdges
+        .map((edge) => `${edge.caller} ${edge.callee} ${edge.via}`)
+        .join(" "),
+    },
     { label: "role", value: entry.role },
   ];
   let score = 0;
@@ -1070,7 +1468,15 @@ function scoreSemanticEntry(
     for (const haystack of haystacks) {
       if (haystack.value.toLowerCase().includes(token)) {
         score +=
-          haystack.label === "symbol" ? 5 : haystack.label === "path" ? 4 : 2;
+          haystack.label === "symbol"
+            ? 5
+            : haystack.label === "path" || haystack.label === "call"
+              ? 4
+              : haystack.label === "comment" ||
+                  haystack.label === "reference" ||
+                  haystack.label === "callGraph"
+                ? 3
+                : 2;
         reasons.push(`${haystack.label} matches ${token}`);
       }
     }
@@ -1086,17 +1492,38 @@ async function semanticFind(
   const maxResults = Number.isFinite(options.maxResults)
     ? Math.max(1, Math.min(20, options.maxResults || 10))
     : 10;
-  const tokens = tokenizeConcept(options.concept);
+  const { tokens, mode } = await getSemanticTokens(
+    options.concept,
+    options.embedding,
+  );
   const entries = await buildProjectMap(
     options.path || ".",
     options.confirmed,
     {
       maxFiles: Math.max(40, maxResults * 4),
       scanLimit: 240,
+      useCache: options.useCache !== false,
     },
   );
+  const vectorScores =
+    options.embedding && options.embeddingMode === "vector"
+      ? await scoreVectorEntries(options.concept, entries, {
+          targetPath: options.path || ".",
+          useCache: options.useCache,
+        })
+      : null;
   const ranked = entries
-    .map((entry) => ({ entry, ...scoreSemanticEntry(entry, tokens) }))
+    .map((entry) => {
+      const scored = scoreSemanticEntry(entry, tokens);
+      const vector = vectorScores?.get(entry.path);
+      return {
+        entry,
+        score: scored.score + (vector?.score || 0),
+        reasons: vector
+          ? [...scored.reasons, vector.reason].slice(0, 8)
+          : scored.reasons,
+      };
+    })
     .filter((item) => item.score > 0)
     .sort(
       (a, b) => b.score - a.score || a.entry.path.localeCompare(b.entry.path),
@@ -1105,11 +1532,17 @@ async function semanticFind(
   return {
     concept: options.concept,
     returnedResults: ranked.length,
+    cache: lastProjectMapCacheStatus,
+    embedding: vectorScores ? "provider" : mode,
+    tokens: tokens.slice(0, 40),
     results: ranked.map((item) => ({
       path: item.entry.path,
       score: item.score,
       role: item.entry.role,
       symbols: item.entry.symbols,
+      calls: item.entry.calls.slice(0, 12),
+      comments: item.entry.comments.slice(0, 6),
+      callEdges: item.entry.callEdges.slice(0, 8),
       reasons: item.reasons,
     })),
   };
@@ -1128,6 +1561,8 @@ async function buildProjectMap(
     typeof options === "number"
       ? Math.max(maxFiles, MAX_PROJECT_MAP_SCAN_FILES)
       : Math.max(maxFiles, options?.scanLimit || MAX_PROJECT_MAP_SCAN_FILES);
+  const useCache = typeof options !== "number" && options?.useCache;
+  lastProjectMapCacheStatus = useCache ? "miss" : "disabled";
   const resolved = resolveSearchRoot(targetPath, confirmed);
   const filters = normalizeSearchFilters({
     extensions: DEFAULT_PROJECT_MAP_EXTENSIONS,
@@ -1136,6 +1571,23 @@ async function buildProjectMap(
   const files = await walk(resolved.fullPath, filters, resolved.fullPath, [], {
     limit: scanLimit,
   });
+  const signature = await getProjectMapSignature(files);
+  const cachePath = getProjectMapCachePath(resolved.fullPath);
+  if (useCache) {
+    try {
+      const cached = JSON.parse(
+        await fs.readFile(cachePath, "utf8"),
+      ) as ProjectMapCachePayload;
+      if (
+        cached.version === 1 &&
+        cached.root === resolved.fullPath &&
+        cached.signature === signature
+      ) {
+        lastProjectMapCacheStatus = "hit";
+        return cached.entries.slice(0, maxFiles);
+      }
+    } catch {}
+  }
   const entries: ProjectMapEntry[] = [];
 
   for (const file of files) {
@@ -1144,6 +1596,7 @@ async function buildProjectMap(
       const displayPath = toDisplayPath(resolved.fullPath, file);
       const symbols = extractTopLevelSymbols(content, file);
       const relations = extractRelationsWithAst(content, file);
+      const astSignals = extractAstCallsAndComments(content, file);
       entries.push({
         path: displayPath,
         symbols,
@@ -1152,6 +1605,9 @@ async function buildProjectMap(
         externalDeps: extractExternalDependenciesWithAst(content, file),
         importedBy: [],
         references: [],
+        calls: astSignals.calls,
+        comments: astSignals.comments,
+        callEdges: astSignals.localCallEdges,
         role: "module",
         score: 0,
       });
@@ -1161,6 +1617,7 @@ async function buildProjectMap(
   const pathSet = new Set(entries.map((entry) => entry.path));
   const importedByMap = new Map<string, Set<string>>();
   const referenceMap = new Map<string, Map<string, Set<string>>>();
+  const importedSymbolTargets = new Map<string, Map<string, string>>();
 
   for (const entry of entries) {
     for (const relation of entry.relations) {
@@ -1185,19 +1642,57 @@ async function buildProjectMap(
         if (!candidate) continue;
         const symbolMap =
           referenceMap.get(candidate) || new Map<string, Set<string>>();
+        const importedTargets =
+          importedSymbolTargets.get(entry.path) || new Map<string, string>();
         for (const symbol of imported.symbols) {
           const files = symbolMap.get(symbol) || new Set<string>();
           files.add(entry.path);
           symbolMap.set(symbol, files);
+          importedTargets.set(symbol, candidate);
         }
+        for (const binding of imported.bindings) {
+          importedTargets.set(binding.local, candidate);
+        }
+        importedSymbolTargets.set(entry.path, importedTargets);
         referenceMap.set(candidate, symbolMap);
       }
     } catch {}
   }
 
+  const symbolsToPath = new Map<string, string>();
+  for (const entry of entries) {
+    for (const symbol of entry.symbols) {
+      symbolsToPath.set(symbol, entry.path);
+    }
+  }
+  for (const entry of entries) {
+    for (const relation of entry.relations) {
+      const candidate = resolveCandidatePath(pathSet, entry.path, relation);
+      const target = candidate
+        ? entries.find((item) => item.path === candidate)
+        : null;
+      if (!candidate || !target) continue;
+      const importedTargets =
+        importedSymbolTargets.get(entry.path) || new Map<string, string>();
+      for (const symbol of target.symbols) {
+        importedTargets.set(symbol, candidate);
+      }
+      importedSymbolTargets.set(entry.path, importedTargets);
+    }
+  }
+
   for (const entry of entries) {
     entry.dependsOn = Array.from(new Set(entry.dependsOn)).sort();
     entry.importedBy = Array.from(importedByMap.get(entry.path) || []).sort();
+    const importedTargets = importedSymbolTargets.get(entry.path);
+    entry.callEdges = entry.callEdges.map((edge) => ({
+      ...edge,
+      via:
+        (edge.receiver ? importedTargets?.get(edge.receiver) : undefined) ||
+        importedTargets?.get(edge.callee) ||
+        symbolsToPath.get(edge.callee) ||
+        edge.via,
+    }));
     entry.references = Array.from(referenceMap.get(entry.path)?.entries() || [])
       .filter(([symbol]) => entry.symbols.includes(symbol))
       .map(([symbol, files]) => ({
@@ -1220,9 +1715,29 @@ async function buildProjectMap(
     );
   }
 
-  return entries
-    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
-    .slice(0, maxFiles);
+  const sortedEntries = entries.sort(
+    (a, b) => b.score - a.score || a.path.localeCompare(b.path),
+  );
+  if (useCache) {
+    try {
+      await fs.mkdir(path.dirname(cachePath), { recursive: true });
+      await fs.writeFile(
+        cachePath,
+        JSON.stringify(
+          {
+            version: 1,
+            root: resolved.fullPath,
+            signature,
+            entries: sortedEntries,
+          } satisfies ProjectMapCachePayload,
+          null,
+          2,
+        ),
+        "utf8",
+      );
+    } catch {}
+  }
+  return sortedEntries.slice(0, maxFiles);
 }
 
 export type { ProjectMapEntry, SearchFilters, SearchMatch };
@@ -1230,6 +1745,7 @@ export {
   buildContext,
   buildProjectMap,
   dedupeSearchMatches,
+  extractAstCallsAndComments,
   extractExternalDependenciesWithAst,
   extractImportedSymbolsWithAst,
   extractRelationsWithAst,
@@ -1237,8 +1753,10 @@ export {
   extractTopLevelSymbolsWithAst,
   filterMatchesByMode,
   formatSearchTextResult,
+  getEmbeddingTokens,
   getProjectMapRole,
   getSearchLineMatcher,
+  getSemanticTokens,
   globFiles,
   globToRegExp,
   matchesGlobPattern,
@@ -1503,12 +2021,15 @@ export const searchTools: ToolDefinition[] = [
   createTool({
     name: "semantic_find",
     description:
-      "按业务概念、行为或模块职责定位最相关源码文件；基于 project_map 的符号、路径、依赖和角色进行轻量语义打分",
+      "按业务概念、行为或模块职责定位最相关源码文件；基于 project_map 的路径、符号、调用、注释、依赖和角色进行轻量语义打分",
     schema: z.object({
       concept: z.string().min(1, "概念不能为空"),
       path: z.string().optional(),
       maxResults: z.number().int().min(1).max(20).optional(),
       confirmed: z.boolean().optional(),
+      useCache: z.boolean().optional(),
+      embedding: z.boolean().optional(),
+      embeddingMode: z.enum(["tokens", "vector"]).optional(),
     }),
     inputSchema: {
       type: "object",
@@ -1526,6 +2047,21 @@ export const searchTools: ToolDefinition[] = [
         confirmed: {
           type: "boolean",
           description: "仅当用户已明确确认读取工作区外目录时才传 true",
+        },
+        useCache: {
+          type: "boolean",
+          description: "可选，是否使用本地语义索引缓存；默认 true",
+        },
+        embedding: {
+          type: "boolean",
+          description:
+            "可选，启用 embedding provider（SEMANTIC_EMBEDDING_PROVIDER）或轻量 fallback 词义扩展；默认 false",
+        },
+        embeddingMode: {
+          type: "string",
+          enum: ["tokens", "vector"],
+          description:
+            "可选，tokens=使用 provider/fallback 扩展关键词；vector=使用 provider 的 embedVector 做向量相似度 rerank",
         },
       },
       required: ["concept"],

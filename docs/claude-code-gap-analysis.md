@@ -329,19 +329,19 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 
 三大短板已有第一版能力，但还需要继续补齐：
 
-1. **长期项目记忆已有雏形但还不智能**：`project_memory` 可跨 session 读写项目画像、偏好和常用命令，但还不会自动提炼、衰减或去敏。
-2. **Semantic finder 已有轻量版**：`semantic_find` 可按概念对 project_map 打分定位文件，但还不是 embedding / AST call graph 级语义检索。
-3. **Sandbox 自动合并仍需增强**：已有 patch 产物和 apply 提示，但还没有交互式选择 apply、冲突处理、分支/PR 流程。
-4. **子代理治理**：有 `task_batch`，但还没有全局并发预算、失败隔离报告、结果缓存。
-5. **任务树更高阶能力**：已持久化，但缺任务依赖、阻塞原因结构化、恢复后继续执行指定任务。
-6. **专项 benchmark**：新能力有单测/构建通过，但还缺专门 smoke benchmark 覆盖真实 agent 使用路径。
+1. **长期项目记忆已有第一轮智能化**：`project_memory` 已支持跨 session 读写、敏感信息过滤、带来源/置信度/过期时间的事实、每轮结束后从摘要/修改文件/验证命令自动提取候选记忆，并在新任务开始时注入简短上下文；交互模式下自动候选会先展示 diff，用户可确认、拒绝或编辑画像后再保存。后续还缺更强 LLM 摘要和记忆衰减评分优化。
+2. **Semantic finder 已从轻量路径/符号打分升级到 AST + embedding 信号版**：`semantic_find` 已结合路径、符号、依赖、引用、函数调用、注释关键词和可选 embedding provider 解释相关性；也支持本地 project map 缓存、provider 向量相似度 rerank、按候选文本哈希复用的向量缓存，以及导入函数/命名空间属性调用边解析到跨文件目标。后续可继续增强动态调用解析。
+3. **Sandbox 自动合并更安全但还不完整**：已有 patch 产物、apply/check、patch 摘要、脏工作区拒绝和失败时保留 patch 提示；后续还缺交互式选择 apply、冲突分步处理、分支/PR 流程。
+4. **子代理治理已有第一轮结构化**：`task_batch` 已有最大并发、结构化 done/failed/truncated、失败隔离和只读结果缓存；后续还缺全局 token/输出预算配置、缓存过期策略和更细重试建议。
+5. **任务树更高阶能力已有恢复、重试与 timeline 入口**：已持久化并支持 `dependsOn` / `blockedReason` / 失败次数 / 历史记录展示，`/execute-task <id>` 可继续指定任务，`/retry-task` 可自动重试第一个依赖已满足的阻塞任务，`/tasks timeline` 可查看任务状态时间线；后续还缺更主动的自动 retry 调度。
+6. **专项 benchmark**：新能力有单测/构建通过，但还缺专门 smoke benchmark 覆盖真实 agent 使用路径，尤其是 memory、semantic finder、task_batch、sandbox patch。
 
 下一轮补齐建议按低风险顺序推进：
 
-- 继续增强 `project_memory` 的自动摘要、去敏和过期策略。
-- 将 `semantic_find` 升级为 embedding / AST call graph 级检索。
-- 补 sandbox 交互式 apply、冲突处理和分支/PR 流程。
-- 为 `project_memory`、`semantic_find`、`task_batch`、sandbox patch 补 smoke benchmark。
+- 继续增强 `project_memory` 的 LLM 自动摘要、记忆冲突合并、衰减评分和用户审查命令。
+- 继续增强 `semantic_find` 的属性调用和动态调用解析。
+- 补 sandbox 交互式 apply、冲突处理、分支/PR 流程。
+- 为 `project_memory`、`semantic_find`、`task_batch`、sandbox patch 补稳定 smoke benchmark。
 
 ## 九、高阶能力补齐计划
 
@@ -351,16 +351,22 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 
 计划：
 
-- 在每轮任务结束时，从 final summary、修改文件、验证命令中提取候选记忆。
-- 增加敏感信息过滤，避免保存 API key、token、邮箱等隐私内容。
-- 为记忆增加来源、置信度和更新时间，支持过期或覆盖旧信息。
-- 在新会话开始时，把项目画像、用户偏好、常用验证命令注入为简短上下文。
+- 已完成：在每轮任务结束时，从 final summary、修改文件、验证命令中提取候选记忆。
+- 已完成：增加敏感信息过滤，避免保存 API key、token、邮箱等隐私内容。
+- 已完成：为记忆增加来源、置信度、更新时间和过期时间，支持过期过滤与同文本高置信覆盖。
+- 已完成：在新任务开始时，把项目画像、用户偏好、常用验证命令和事实注入为简短上下文。
+- 已完成：自动生成轻量项目画像摘要，补足没有手动 overview 时的项目记忆入口。
+- 已完成：支持 `/memory` 查看、`/memory remove <id>` 删除事实、`/memory overview <text>` 编辑画像、`/memory clear` 清空记忆。
+- 已完成：记忆事实带稳定 id，便于用户审查和删除。
+- 已完成：交互模式下自动记忆候选保存前展示 diff，并支持确认、拒绝或编辑项目画像后保存。
+- 待增强：用 LLM 生成更高质量的项目画像摘要。
+- 待增强：增加更细的记忆衰减评分策略。
 
 验收：
 
 - 不保存密钥和明显隐私信息。
-- 恢复或新开会话时能读到项目偏好和常用命令。
-- focused tests 覆盖提取、去敏、去重、过期。
+- 恢复或新开任务时能读到项目偏好和常用命令。
+- focused tests 覆盖提取、去敏、去重、过期和上下文注入。
 
 ### 2. 更强 Semantic Finder
 
@@ -368,10 +374,13 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 
 计划：
 
-- 第一阶段：扩展 AST 索引，加入函数调用、类方法、导入导出链路、注释关键词。
-- 第二阶段：生成本地符号索引缓存，避免每次全量扫描。
-- 第三阶段：可选接入 embedding provider，支持自然语言概念匹配。
-- 返回结果增加“为什么相关”的解释：命中符号、调用链、引用关系、注释语义。
+- 已完成：扩展 AST 索引，加入函数调用、类方法调用和注释关键词。
+- 已完成：结合导入导出链路、符号引用、依赖、角色返回“为什么相关”的解释。
+- 已完成：生成本地 project map 缓存，避免重复查询时每次全量扫描。
+- 已完成：可选接入 embedding provider，支持自然语言概念 token 扩展和向量相似度 rerank。
+- 已完成：持久化向量缓存，按 provider + 候选文本哈希复用 entry embedding，避免 vector 模式重复嵌入未变化候选。
+- 已完成：将导入函数和命名空间属性调用边解析到跨文件目标，进一步提升行为级定位。
+- 待增强：继续增强动态调用解析。
 
 验收：
 
@@ -385,10 +394,15 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 
 计划：
 
-- 增加 `sandbox apply` 或交互命令，展示 patch 摘要后确认应用。
-- 支持 `--check` 预检 patch 是否可应用。
-- 冲突时保留 sandbox、patch 和失败原因，给出手动处理步骤。
-- 后续支持从 sandbox 创建分支，甚至生成 PR 准备信息。
+- 已完成：增加 `sandbox:apply` 命令，展示 patch 摘要后应用。
+- 已完成：支持 `--check` 预检 patch 是否可应用。
+- 已完成：目标工作区存在未提交改动时默认拒绝应用，可通过 `--allow-dirty` 显式覆盖。
+- 已完成：冲突或 apply 失败时保留 patch 和失败原因，提示手动检查。
+- 已完成：支持通过 `sandbox:apply --path <file>` 选择性应用 patch 中的部分文件。
+- 已完成：支持通过 `sandbox:apply --hunk <n>` 选择性应用 patch 中的部分 hunk，也支持 `--interactive` 列出 hunks 后输入序号。
+- 已完成：支持 `sandbox:branch <patch> <branch>` 从 patch 创建隔离分支 worktree，便于检查、提交或准备 PR。
+- 待增强：交互式 hunk 选择 UI。
+- 待增强：自动生成 PR 描述和远端推送/开 PR 流程。
 
 验收：
 
@@ -402,10 +416,13 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 
 计划：
 
-- 增加全局子任务预算：最大并发数、最大轮数、最大 token/输出长度。
-- 每个子任务返回结构化状态：done / failed / truncated。
-- 子任务失败不影响整批结果，主 Agent 能看到失败原因和可重试建议。
-- 增加结果缓存，重复只读分析可复用最近结果。
+- 已完成：增加子任务调度预算：最大并发数、最大轮数和最大输出长度。
+- 已完成：每个子任务返回结构化状态：done / failed / truncated，并包含 roundsUsed、error、cached。
+- 已完成：子任务失败不影响整批结果，主 Agent 能看到失败原因。
+- 已完成：增加只读结果缓存，重复分析可复用最近结果。
+- 已完成：增加整批 token 预算、缓存 TTL、失败重试建议和跨批次耗用统计。
+- 已完成：增加批次取消参数、逐任务 progress、startedAt/finishedAt/durationMs，便于展示子代理进度 trace。
+- 待增强：更精确的 tokenizer 统计和更主动的自动重试调度。
 
 验收：
 
@@ -419,11 +436,16 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 
 计划：
 
-- 增加任务依赖字段：`dependsOn`。
-- 增加结构化阻塞原因：`blockedReason`。
-- 支持 `/tasks` 展示依赖和阻塞原因。
-- 支持恢复会话后执行指定任务：`/execute-task <id>`。
-- 长任务中自动把 completed / blocked 状态写入 session。
+- 已完成：增加任务依赖字段：`dependsOn`。
+- 已完成：增加结构化阻塞原因：`blockedReason`。
+- 已完成：支持 `/tasks` 展示依赖和阻塞原因。
+- 已完成：支持恢复会话后执行指定任务：`/execute-task <id>`。
+- 已完成：支持 `/retry-task` 自动重试第一个依赖已满足的阻塞任务。
+- 已完成：长任务中自动把 completed / blocked 状态写入 session。
+- 已完成：执行任务前自动检查依赖是否已完成。
+- 已完成：记录每个任务的执行历史、失败次数和重试建议，并在 `/tasks` 中展示摘要。
+- 已完成：支持 `/tasks timeline` 查看任务状态变化时间线。
+- 待增强：更主动的自动 retry 调度。
 
 验收：
 
@@ -437,20 +459,23 @@ Claude Code 的像不像，很多时候不只是技术能力，而是：
 
 计划：
 
-- 增加 `memory-smoke`：验证项目记忆读写和安全约束。
-- 增加 `semantic-finder-smoke`：验证自然语言概念定位。
-- 增加 `subtask-batch-smoke`：验证并发只读子任务总结。
-- 增加 `sandbox-patch-smoke`：验证 sandbox patch 生成和提示。
-- 将稳定 smoke 纳入 `benchmark:smoke`，避免发布时回退。
+- 已完成：增加 `memory-smoke`，覆盖 `project_memory` 读取、记忆动作、安全过滤、事实元数据和上下文注入。
+- 已完成：增加 `semantic-finder-smoke`，覆盖 `semantic_find` 自然语言概念定位、AST 信号、缓存、调用边和 embedding fallback。
+- 已完成：增加 `subtask-batch-smoke`，覆盖并发只读子任务、结构化状态、token 预算、缓存 TTL 和重试建议。
+- 已完成：增加 `sandbox-patch-smoke`，覆盖 sandbox patch 生成、apply 预检、选择性路径应用、脏工作区保护和 branch worktree。
+- 已完成：将上述稳定 smoke 纳入 `benchmark:smoke`，避免发布时回退。
 
 验收：
 
-- `npm run benchmark:smoke` 覆盖核心高阶能力。
-- release checklist 明确包含这些门禁。
-- CI 输出能看出失败任务和失败类型。
+- 已完成：`npm run benchmark:smoke` 已覆盖核心高阶能力；该脚本也被 CI 和 release workflow 调用。
+- 已完成：release checklist 包含 `npm run benchmark:smoke` / `npm run release:check` 门禁。
+- 已完成：benchmark 报告已按任务输出 passed/skipped/failureType，CI 可据此定位失败任务和失败类型。
+- 已完成：benchmark 结果会追加写入 `.history.json`，用于长期趋势和成功率 delta 对比。
 
 如果继续推进，建议下一步先做：
 
-- 智能长期记忆的去敏和自动提取。
-- `semantic_find` 的 AST 调用/注释索引。
-- sandbox patch apply/check 命令。
+1. **Memory 审查体验增强**：继续完善自动记忆的逐条编辑/选择性保存。
+2. **Semantic finder 动态调用解析**：继续增强变量别名和更复杂动态调用边。
+3. **任务 timeline 与主动 retry**：补更细的任务时间线 UI，以及无需手动 `/retry-task` 的主动 retry 调度。
+4. **Subagent 更主动调度**：在现有取消/progress trace 基础上补更精确 tokenizer 和主动 retry。
+5. **Benchmark 趋势可视化**：在 `.history.json` 基础上生成更易读的趋势摘要或 CI 注释。

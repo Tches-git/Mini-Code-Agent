@@ -233,6 +233,96 @@ export const benchmarkTasks: BenchmarkTask[] = [
     },
   },
   {
+    id: "memory-smoke",
+    title: "项目长期记忆 smoke",
+    category: "read",
+    prompt:
+      "用 project_memory 工具只读取当前项目记忆，再阅读 src/tools/memory.ts 与 src/cli/interactive.ts 中 /memory 相关实现。说明 read/update/edit/clear、敏感信息过滤、fact id/expiry 和上下文注入如何形成长期记忆闭环。不要修改源码或保存新的记忆。请用 4-6 个要点简洁总结。",
+    description:
+      "专项覆盖 project_memory 真实工具入口、长期记忆读写动作、安全过滤、事实元数据和交互式审查命令。",
+    expectation: {
+      finalTextIncludesAny: [
+        ["project_memory", "记忆"],
+        ["read", "读取"],
+        ["update", "edit", "clear", "更新", "编辑", "清空"],
+        ["敏感", "过滤", "secret", "token"],
+        ["上下文", "注入", "context"],
+      ],
+      minToolCalls: 3,
+      maxDiffs: 0,
+      maxValidationRuns: 0,
+      mustPassValidation: true,
+    },
+  },
+  {
+    id: "semantic-finder-smoke",
+    title: "语义定位工具 smoke",
+    category: "read",
+    prompt:
+      "先使用 semantic_find 按概念 session restore 或 auto validation 定位相关代码，再阅读 src/tools/search.ts 中 semantic_find/project map 的局部实现。说明 path/symbol/import/reference/call/comment 信号、cache、callEdges 和 embedding fallback 如何提升自然语言概念定位。不要修改文件。请用 4-6 个要点简洁总结。",
+    description:
+      "专项覆盖 semantic_find 的真实工具入口、AST 信号、索引缓存、调用边和本地 embedding fallback。",
+    expectation: {
+      finalTextIncludesAny: [
+        ["semantic_find", "语义"],
+        ["cache", "缓存"],
+        ["callEdges", "调用图", "call graph"],
+        ["embedding", "fallback"],
+        ["path", "symbol", "符号", "comment", "注释"],
+      ],
+      minToolCalls: 3,
+      maxDiffs: 0,
+      maxValidationRuns: 0,
+      mustPassValidation: true,
+    },
+  },
+  {
+    id: "subtask-batch-smoke",
+    title: "并发只读子任务 smoke",
+    category: "read",
+    prompt:
+      "使用 task_batch 启动两个只读子任务：一个分析 src/tools/memory.ts 的长期记忆能力，一个分析 src/tools/search.ts 的 semantic_find 能力；然后阅读 src/tools/subtask.ts 局部实现。说明 maxConcurrency、tokenBudget、done/failed/truncated 状态、cache TTL 和 retrySuggestion 如何治理子任务。不要修改文件。请用 4-6 个要点简洁总结。",
+    description:
+      "专项覆盖 task_batch 的真实工具入口、并发只读委派、结构化状态、预算、缓存和失败重试提示。",
+    expectation: {
+      finalTextIncludesAny: [
+        ["task_batch", "子任务"],
+        ["并发", "concurrency"],
+        ["tokenBudget", "token 预算"],
+        ["done", "failed", "truncated"],
+        ["cache", "缓存"],
+        ["retrySuggestion", "重试"],
+      ],
+      minToolCalls: 2,
+      maxDiffs: 0,
+      maxValidationRuns: 0,
+      mustPassValidation: true,
+    },
+  },
+  {
+    id: "sandbox-patch-smoke",
+    title: "Sandbox Patch 工作流 smoke",
+    category: "read",
+    prompt:
+      "不要实际应用 patch 或创建 worktree。只阅读 src/release/worktree.ts 与 src/cli/index.ts 中 sandbox:apply / sandbox:branch 相关实现，说明 runTaskInWorktreeSandbox 如何生成 sandbox patch/mergeHint，sandbox:apply --check/--path/--allow-dirty 的安全策略，以及 sandbox:branch 如何创建分支 worktree。请用 4-6 个要点简洁总结。",
+    description:
+      "专项覆盖 sandbox patch 生成提示、apply 预检、选择性路径应用、脏工作区保护和分支 worktree 审查路径。",
+    expectation: {
+      finalTextIncludesAny: [
+        ["sandbox", "worktree"],
+        ["patch", "补丁"],
+        ["--check", "预检"],
+        ["--path", "选择"],
+        ["dirty", "未提交", "allow-dirty"],
+        ["branch", "分支"],
+      ],
+      minToolCalls: 3,
+      maxDiffs: 0,
+      maxValidationRuns: 0,
+      mustPassValidation: true,
+    },
+  },
+  {
     id: "edit-constant",
     title: "修改固定常量",
     category: "edit",

@@ -4,6 +4,13 @@ import chalk from "chalk";
 import { execa } from "execa";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { getRuntimeEnvInfo, loadWorkspaceEnv } from "../llm/env.js";
+import {
+  editProjectMemory,
+  type ProjectMemoryReview,
+  type ProjectMemoryReviewDecision,
+  readProjectMemory,
+  reviewProjectMemoryEdit,
+} from "../tools/memory.js";
 import type {
   AgentEvent,
   AgentTaskItem,
@@ -51,12 +58,16 @@ const SLASH_COMMANDS = {
   "/help": "显示可用命令列表",
   "/plan <task>": "只制定执行计划，不修改文件",
   "/execute [task]": "执行最近一次计划，或直接执行指定任务",
+  "/execute-task <id>": "恢复后继续执行指定任务树节点",
+  "/retry-task": "自动重试第一个依赖已满足的阻塞任务",
   "/diff [--staged] [path]":
     "查看当前工作区 Git diff，可限定路径或 staged diff",
   "/status": "查看当前工作区、会话、撤销和 Git 状态",
   "/config": "查看模型、环境、验证和命令策略配置",
   "/undo": "撤销 Agent 最近一次文件修改",
-  "/tasks": "查看上一轮任务步骤",
+  "/tasks [timeline]": "查看上一轮任务步骤，timeline 显示任务状态时间线",
+  "/memory [review|clear|remove <id>|overview <text>]":
+    "查看、预览、确认/拒绝或编辑项目长期记忆",
   "/approvals": "查看审批记录，可用 decision:/action:/path:/after: 等过滤",
   "/sessions": "查看可恢复的历史会话",
   "/resume <id>": "恢复指定会话 ID 的上下文",
@@ -78,11 +89,36 @@ function getSlashCommandName(input: string): string | null {
   return commandName.includes("/", 1) ? null : commandName;
 }
 
-function printHelp() {
+export function getSlashCommandSuggestions(inputText = "/"): string[] {
+  const prefix = inputText.trim() || "/";
+  return Object.entries(SLASH_COMMANDS)
+    .filter(([cmd]) => cmd.split(/\s+/)[0]?.startsWith(prefix))
+    .map(([cmd, desc]) => `**${cmd}** ${desc}`);
+}
+
+export function completeSlashCommand(line: string): [string[], string] {
+  if (!line.startsWith("/")) return [[], line];
+  const prefix = /^\/\S*/.exec(line)?.[0] || "/";
+  const hits = Object.keys(SLASH_COMMANDS)
+    .map((cmd) => cmd.split(/\s+/)[0] || cmd)
+    .filter((cmd) => cmd.startsWith(prefix))
+    .map((cmd) => `${cmd} `);
+  return [hits.length ? hits : Object.keys(SLASH_COMMANDS), line];
+}
+
+function printSlashSuggestions(inputText = "/") {
+  const suggestions = getSlashCommandSuggestions(inputText);
   logCardList(
-    "可用命令",
-    Object.entries(SLASH_COMMANDS).map(([cmd, desc]) => `**${cmd}** ${desc}`),
+    inputText === "/" ? "常用 slash 命令" : "匹配的 slash 命令",
+    suggestions.length > 0
+      ? suggestions
+      : ["没有匹配的 slash 命令，输入 /help 查看全部。"],
   );
+  console.log();
+}
+
+function printHelp() {
+  logCardList("可用命令", getSlashCommandSuggestions("/"));
   logHint(
     '其他输入将作为任务发送给 Agent；输入 ``` 或 """ 可进入多行模式，再次输入相同标记结束。',
   );
@@ -121,7 +157,31 @@ export async function collectMultilineInput(
   }
 }
 
-export function printTaskSteps(steps: string[], tasks: AgentTaskItem[] = []) {
+function formatTaskTimeline(tasks: AgentTaskItem[]): string[] {
+  const labels: Record<AgentTaskItem["status"], string> = {
+    todo: "待办",
+    doing: "进行中",
+    done: "完成",
+    blocked: "阻塞",
+  };
+  return tasks.flatMap((task) =>
+    (task.history || []).map((entry, index) => {
+      const details = [
+        entry.note,
+        entry.failureCount ? `失败次数: ${entry.failureCount}` : "",
+        entry.retrySuggestion ? `重试建议: ${entry.retrySuggestion}` : "",
+      ].filter(Boolean);
+      const suffix = details.length ? ` — ${details.join("; ")}` : "";
+      return `**${task.id}.${index + 1}.** ${entry.at} [${labels[entry.status]}] ${task.title}${suffix}`;
+    }),
+  );
+}
+
+export function printTaskSteps(
+  steps: string[],
+  tasks: AgentTaskItem[] = [],
+  options: { timeline?: boolean } = {},
+) {
   logSection("任务步骤");
   if (steps.length === 0 && tasks.length === 0) {
     logEmptyState("当前还没有可展示的任务步骤。");
@@ -137,10 +197,24 @@ export function printTaskSteps(steps: string[], tasks: AgentTaskItem[] = []) {
     };
     logCardList(
       "任务状态",
-      tasks.map(
-        (task) => `**${task.id}.** [${labels[task.status]}] ${task.title}`,
-      ),
+      tasks.map((task) => {
+        const details = [
+          task.dependsOn?.length ? `依赖: ${task.dependsOn.join(",")}` : "",
+          task.blockedReason ? `阻塞: ${task.blockedReason}` : "",
+          task.failureCount ? `失败次数: ${task.failureCount}` : "",
+          task.retrySuggestion ? `重试建议: ${task.retrySuggestion}` : "",
+          task.history?.length ? `历史: ${task.history.length} 条` : "",
+        ].filter(Boolean);
+        const suffix = details.length ? ` — ${details.join("; ")}` : "";
+        return `**${task.id}.** [${labels[task.status]}] ${task.title}${suffix}`;
+      }),
     );
+  }
+  if (options.timeline) {
+    const timeline = formatTaskTimeline(tasks);
+    timeline.length > 0
+      ? logCardList("任务时间线", timeline)
+      : logEmptyState("当前任务还没有历史时间线。");
   }
   if (steps.length > 0) {
     logCardList(
@@ -188,6 +262,102 @@ export async function printInteractiveStatus(options: {
     },
     { label: "Git", value: await getWorkspaceDiffSummary() },
   ]);
+  console.log();
+}
+
+async function reviewProjectMemoryInteractively(
+  rl: readline.Interface,
+  review: ProjectMemoryReview,
+): Promise<ProjectMemoryReviewDecision> {
+  logCard("项目长期记忆自动候选");
+  const candidateLines = [
+    ...(review.candidates?.preferences || []).map((item) => `偏好: ${item}`),
+    ...(review.candidates?.commands || []).map((item) => `命令: ${item}`),
+    ...(review.candidates?.facts || []).map((item) => `事实: ${item.text}`),
+  ];
+  if (candidateLines.length > 0) {
+    logCardList("候选条目", candidateLines);
+  }
+  logDetailEntries([{ label: "Diff", value: review.diff }]);
+  const answer = await rl.question(chalk.cyan.bold("  保存这次记忆？[y/N/e] "));
+  const normalized = answer.trim().toLowerCase();
+  if (normalized === "y" || normalized === "yes") return "accept";
+  if (normalized === "e" || normalized === "edit") {
+    const overview = await rl.question(chalk.cyan.bold("  编辑项目画像: "));
+    return { update: { overview } };
+  }
+  return "reject";
+}
+
+export async function printProjectMemory(commandText = "") {
+  const trimmed = commandText.trim();
+  if (trimmed === "review") {
+    const review = await reviewProjectMemoryEdit({});
+    logCard("项目长期记忆拟议变更");
+    logDetailEntries([{ label: "Diff", value: review.diff }]);
+    console.log();
+    return;
+  }
+  if (trimmed === "clear") {
+    await editProjectMemory({ clear: true });
+    logSuccess("项目长期记忆已清空。");
+    console.log();
+    return;
+  }
+  const removeMatch = /^(?:review\s+)?remove\s+(.+)$/.exec(trimmed);
+  if (removeMatch) {
+    const ids = removeMatch[1]
+      .split(/[,\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (trimmed.startsWith("review remove")) {
+      const review = await reviewProjectMemoryEdit({ removeFactIds: ids });
+      logCard("项目长期记忆拟议变更");
+      logDetailEntries([{ label: "Diff", value: review.diff }]);
+      console.log();
+      return;
+    }
+    const memory = await editProjectMemory({ removeFactIds: ids });
+    logSuccess(`已删除 ${ids.length} 条记忆事实。`);
+    logCardList(
+      "剩余事实",
+      (memory.facts || []).map((fact) => `**${fact.id}.** ${fact.text}`),
+    );
+    console.log();
+    return;
+  }
+  const overviewMatch = /^(?:review\s+)?overview\s+(.+)$/.exec(trimmed);
+  if (overviewMatch) {
+    const overview = overviewMatch[1].trim();
+    if (trimmed.startsWith("review overview")) {
+      const review = await reviewProjectMemoryEdit({ overview });
+      logCard("项目长期记忆拟议变更");
+      logDetailEntries([{ label: "Diff", value: review.diff }]);
+      console.log();
+      return;
+    }
+    await editProjectMemory({ overview });
+    logSuccess("项目画像已更新。");
+    console.log();
+    return;
+  }
+
+  const memory = await readProjectMemory();
+  logCard("项目长期记忆");
+  logDetailEntries([
+    { label: "项目画像", value: memory.overview || "无" },
+    { label: "偏好", value: memory.preferences.join("; ") || "无" },
+    { label: "常用命令", value: memory.commands.join("; ") || "无" },
+  ]);
+  if (memory.facts?.length) {
+    logCardList(
+      "事实",
+      memory.facts.map(
+        (fact) =>
+          `**${fact.id}.** ${fact.text} (${fact.source}, ${fact.confidence})`,
+      ),
+    );
+  }
   console.log();
 }
 
@@ -439,7 +609,12 @@ export async function startInteractive(options?: {
   const workspaceRoot = options?.cwd || process.cwd();
   setWorkspaceRoot(workspaceRoot);
   loadWorkspaceEnv(workspaceRoot);
-  const rl = readline.createInterface({ input, output, terminal: true });
+  const rl = readline.createInterface({
+    input,
+    output,
+    terminal: true,
+    completer: completeSlashCommand,
+  });
   const spinner = new Spinner();
   const confirmAction = async (request: ApprovalRequest): Promise<boolean> => {
     spinner.stop();
@@ -483,6 +658,7 @@ export async function startInteractive(options?: {
   const agent = new AgentOrchestrator({
     onEvent: (event) => handleEvent(event, spinner),
     onConfirmCommand: confirmAction,
+    onReviewMemory: (review) => reviewProjectMemoryInteractively(rl, review),
   });
 
   logBanner();
@@ -542,6 +718,11 @@ export async function startInteractive(options?: {
     }
 
     const slashCommand = getSlashCommandName(trimmed);
+
+    if (trimmed === "/" || (trimmed.startsWith("/") && !slashCommand)) {
+      printSlashSuggestions(trimmed);
+      continue;
+    }
 
     if (slashCommand === "/exit" || slashCommand === "/quit") {
       logHint("再见 👋");
@@ -619,6 +800,40 @@ export async function startInteractive(options?: {
       }
       continue;
     }
+    if (slashCommand === "/execute-task" || slashCommand === "/retry-task") {
+      const isRetryTask = slashCommand === "/retry-task";
+      const taskIdText = trimmed.replace(/^\/execute-task\b/, "").trim();
+      const taskId = Number.parseInt(taskIdText, 10);
+      if (!isRetryTask && (!Number.isInteger(taskId) || taskId <= 0)) {
+        logError("用法: /execute-task <id>");
+        console.log();
+        continue;
+      }
+      try {
+        const result = isRetryTask
+          ? await agent.retryNextBlockedTask()
+          : await agent.executeTask(taskId);
+        lastTaskSteps = result.steps;
+        lastTaskItems = result.tasks || [];
+        spinner.stop();
+        logCard(isRetryTask ? "任务自动重试完成" : `任务 ${taskId} 执行完成`);
+        if (result.diffs.length > 0) {
+          logSection("变更预览");
+          for (const d of result.diffs) {
+            logDiffHeader(d.path, d.summary);
+            for (const l of d.diff.split("\n")) logDiffLine(l);
+          }
+        } else {
+          logEmptyState("本轮没有文件变更。");
+        }
+        logAssistant(result.finalText);
+      } catch (error) {
+        spinner.stop();
+        logError(error instanceof Error ? error.message : String(error));
+        console.log();
+      }
+      continue;
+    }
     if (slashCommand === "/diff") {
       try {
         await printWorkspaceDiff(parseDiffCommandArgs(trimmed));
@@ -652,7 +867,19 @@ export async function startInteractive(options?: {
       continue;
     }
     if (slashCommand === "/tasks") {
-      printTaskSteps(lastTaskSteps, lastTaskItems);
+      const taskArgs = trimmed.replace(/^\/tasks\b/, "").trim();
+      printTaskSteps(lastTaskSteps, lastTaskItems, {
+        timeline: /^(timeline|history)$/.test(taskArgs),
+      });
+      continue;
+    }
+    if (slashCommand === "/memory") {
+      try {
+        await printProjectMemory(trimmed.replace(/^\/memory\b/, ""));
+      } catch (error) {
+        logError(error instanceof Error ? error.message : String(error));
+        console.log();
+      }
       continue;
     }
     if (slashCommand === "/undo") {

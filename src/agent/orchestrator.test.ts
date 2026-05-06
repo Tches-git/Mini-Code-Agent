@@ -317,6 +317,107 @@ describe("AgentOrchestrator", () => {
     expect(result.finalText).toContain("项目结构如下");
   });
 
+  it("executeTask continues an existing unfinished task without resetting task graph", async () => {
+    mockChatStream.mockImplementationOnce(
+      async (msgs: Array<{ role: string; content?: string | null }>) => {
+        expect(
+          msgs.some((msg) => msg.content?.includes("继续执行任务 2")),
+        ).toBe(true);
+        return { text: "任务 2 已继续完成。", toolCalls: [] };
+      },
+    );
+
+    const agent = new AgentOrchestrator();
+    // biome-ignore lint/complexity/useLiteralKeys: test restores private task graph state directly
+    agent["taskGraph"].restore([
+      { id: 1, title: "已完成", status: "done" },
+      { id: 2, title: "继续验证", status: "blocked" },
+    ]);
+    const result = await agent.executeTask(2);
+
+    expect(result.finalText).toContain("任务 2");
+    expect(result.tasks?.[0]).toEqual({
+      id: 1,
+      title: "已完成",
+      status: "done",
+    });
+    expect(result.tasks?.[1]).toMatchObject({
+      id: 2,
+      title: "继续验证",
+      status: "done",
+    });
+    expect(result.tasks?.[1]?.history?.length).toBeGreaterThan(0);
+  });
+
+  it("executeTask blocks when dependencies are not done", async () => {
+    const agent = new AgentOrchestrator();
+    // biome-ignore lint/complexity/useLiteralKeys: test restores private task graph state directly
+    agent["taskGraph"].restore([
+      { id: 1, title: "准备", status: "todo" },
+      { id: 2, title: "继续验证", status: "blocked", dependsOn: [1] },
+    ]);
+
+    const result = await agent.executeTask(2);
+
+    expect(result.finalText).toContain("依赖未完成");
+    expect(result.steps).toContain("任务依赖门禁未通过");
+    expect(result.tasks?.[1]).toMatchObject({
+      id: 2,
+      status: "blocked",
+      failureCount: 1,
+      retrySuggestion: "先完成依赖任务，再继续执行当前任务。",
+    });
+    expect(result.tasks?.[1]?.history?.length).toBe(1);
+  });
+
+  it("retryNextBlockedTask retries the first runnable blocked task", async () => {
+    mockChatStream.mockImplementationOnce(
+      async (msgs: Array<{ role: string; content?: string | null }>) => {
+        expect(
+          msgs.some((msg) => msg.content?.includes("自动重试任务 2")),
+        ).toBe(true);
+        return { text: "任务 2 已重试完成。", toolCalls: [] };
+      },
+    );
+
+    const agent = new AgentOrchestrator();
+    // biome-ignore lint/complexity/useLiteralKeys: test restores private task graph state directly
+    agent["taskGraph"].restore([
+      { id: 1, title: "已完成", status: "done" },
+      {
+        id: 2,
+        title: "继续验证",
+        status: "blocked",
+        dependsOn: [1],
+        failureCount: 1,
+      },
+    ]);
+
+    const result = await agent.retryNextBlockedTask();
+
+    expect(result.steps).toContain("任务 2 第 2 次尝试");
+    expect(result.tasks?.[1]).toMatchObject({
+      id: 2,
+      status: "done",
+      failureCount: 1,
+    });
+    expect(result.tasks?.[1]?.blockedReason).toBeUndefined();
+    expect(result.tasks?.[1]?.retrySuggestion).toBeUndefined();
+  });
+
+  it("executeTask reports missing or completed tasks", async () => {
+    const agent = new AgentOrchestrator();
+    // biome-ignore lint/complexity/useLiteralKeys: test restores private task graph state directly
+    agent["taskGraph"].restore([{ id: 1, title: "已完成", status: "done" }]);
+
+    await expect(agent.executeTask(99)).resolves.toMatchObject({
+      finalText: "未找到任务 99。",
+    });
+    await expect(agent.executeTask(1)).resolves.toMatchObject({
+      finalText: "任务 1 已完成，无需继续执行。",
+    });
+  });
+
   it("工具执行失败后错误回传到消息中", async () => {
     let callCount = 0;
     mockChatStream.mockImplementation(
