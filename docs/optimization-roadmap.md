@@ -1,8 +1,8 @@
 # 优化路线图
 
-> 适用仓库：`mini-code-agent` / `mini-claude-code`
+> 适用仓库：`local-code-agent`
 >
-> 目标：在现有本地代码 Agent CLI 的基础上，继续向 Claude Code 风格体验靠拢，重点提升工具精度、交互可见性、编辑可靠性、会话长期使用体验和质量门禁。
+> 目标：在现有本地代码 Agent CLI 的基础上，继续向成熟代码 Agent 工作流靠拢，重点提升工具精度、交互可见性、编辑可靠性、会话长期使用体验和质量门禁。
 
 ## 当前已完成能力
 
@@ -15,7 +15,7 @@
 - smoke benchmark、CI benchmark job、release workflow benchmark、README quality gates。
 - 交互模式新增 `/plan`、`/diff`、`/undo`、`/tasks`、`/status`。
 - 多行输入支持 fenced block 与反斜杠续行。
-- `glob_files` 工具，用于 Claude Code 风格“先 Glob 定位文件”。
+- `glob_files` 工具，用于代码 Agent 风格“先 Glob 定位文件”。
 - `read_file` 支持 `offset/limit` 分页读取长文件。
 - `run_command` 支持 `outputOffset/outputLimit` 分页输出。
 - `search_text` 支持 `regex` 与 `caseSensitive`。
@@ -26,7 +26,7 @@
 
 后续优化建议分为六条主线：
 
-1. **工具层继续对齐 Claude Code 工作流**：Glob / Grep / Read / Edit / Bash 分工更清晰。
+1. **工具层继续对齐成熟代码 Agent 工作流**：Glob / Grep / Read / Edit / Bash 分工更清晰。
 2. **编辑可靠性增强**：降低文本替换失败率，提高局部修改可控性。
 3. **交互 CLI 体验增强**：状态、配置、计划执行、diff、会话检索更可见。
 4. **会话与撤销能力增强**：支持长期会话、多轮 undo、更强历史检索。

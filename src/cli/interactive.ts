@@ -489,7 +489,7 @@ export async function printInteractiveConfig() {
   ]);
   if (!env.openaiApiKeyConfigured) {
     logHint(
-      "可运行 `mini-claude-code init` 生成 .env 模板，再运行 `mini-claude-code doctor --ping` 检查配置。",
+      "可运行 `local-code-agent init` 生成 .env 模板，再运行 `local-code-agent doctor --ping` 检查配置。",
     );
   }
   console.log();
@@ -1117,13 +1117,13 @@ export async function startInteractive(options?: {
       continue;
     }
     if (slashCommand === "/init") {
-      logHint("请在终端中运行 `mini-claude-code init` 生成 .env 模板。");
+      logHint("请在终端中运行 `local-code-agent init` 生成 .env 模板。");
       console.log();
       continue;
     }
     if (slashCommand === "/doctor") {
       logHint(
-        "请在终端中运行 `mini-claude-code doctor --ping` 检查安装、环境配置与 LLM 连通性。",
+        "请在终端中运行 `local-code-agent doctor --ping` 检查安装、环境配置与 LLM 连通性。",
       );
       console.log();
       continue;

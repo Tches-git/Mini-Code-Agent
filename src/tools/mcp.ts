@@ -37,6 +37,10 @@ type McpTool = {
 };
 
 function getMcpConfigPath(): string {
+  return path.join(getWorkspaceRoot(), ".local-code-agent", "mcp.json");
+}
+
+function getLegacyMcpConfigPath(): string {
   return path.join(getWorkspaceRoot(), ".mini-claude-code", "mcp.json");
 }
 
@@ -57,7 +61,10 @@ function validateServerName(name: string) {
 }
 
 async function readMcpConfig(): Promise<McpConfig> {
-  const configPath = getMcpConfigPath();
+  let configPath = getMcpConfigPath();
+  if (!existsSync(configPath)) {
+    configPath = getLegacyMcpConfigPath();
+  }
   if (!existsSync(configPath)) return {};
   if (!isPathInsideWorkspace(configPath)) {
     throw new Error("MCP config must be inside workspace");
@@ -157,7 +164,7 @@ class McpStdioClient {
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
-      clientInfo: { name: "mini-claude-code", version: "0.1.0" },
+      clientInfo: { name: "local-code-agent", version: "0.1.0" },
     });
     this.notify("notifications/initialized");
   }

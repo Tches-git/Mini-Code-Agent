@@ -1074,7 +1074,7 @@ describe("semantic finder", () => {
     const stateDir = await fs.mkdtemp(
       path.join(os.tmpdir(), "semantic-state-"),
     );
-    process.env.MINI_CLAUDE_CODE_STATE_DIR = stateDir;
+    process.env.LOCAL_CODE_AGENT_STATE_DIR = stateDir;
     await fs.writeFile(
       path.join(tempDir, "session.ts"),
       "export function restoreSession() {}\n",
@@ -1097,7 +1097,7 @@ describe("semantic finder", () => {
     expect(first.cache).toBe("miss");
     expect(second.cache).toBe("hit");
     await fs.rm(stateDir, { recursive: true, force: true });
-    delete process.env.MINI_CLAUDE_CODE_STATE_DIR;
+    delete process.env.LOCAL_CODE_AGENT_STATE_DIR;
   });
 
   it("embedding fallback expands related concepts", async () => {
@@ -1226,7 +1226,7 @@ export async function embedVector(text) {
 }\n`,
       "utf8",
     );
-    process.env.MINI_CLAUDE_CODE_STATE_DIR = stateDir;
+    process.env.LOCAL_CODE_AGENT_STATE_DIR = stateDir;
     process.env.SEMANTIC_EMBEDDING_PROVIDER = providerPath;
 
     await semanticFind({
@@ -1250,7 +1250,7 @@ export async function embedVector(text) {
     expect(calls.filter((call) => call === "concept")).toHaveLength(2);
     expect(calls.filter((call) => call === "billing")).toHaveLength(1);
     expect(calls.filter((call) => call === "theme")).toHaveLength(1);
-    delete process.env.MINI_CLAUDE_CODE_STATE_DIR;
+    delete process.env.LOCAL_CODE_AGENT_STATE_DIR;
     delete process.env.SEMANTIC_EMBEDDING_PROVIDER;
   });
 

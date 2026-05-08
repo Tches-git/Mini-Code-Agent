@@ -51,7 +51,9 @@ import { printSessionDetail, printSessions } from "./sessions.js";
 const program = new Command();
 
 function getCliVersion(): string {
-  const injectedVersion = process.env.MINI_CLAUDE_CODE_VERSION?.trim();
+  const injectedVersion =
+    process.env.LOCAL_CODE_AGENT_VERSION?.trim() ||
+    process.env.MINI_CLAUDE_CODE_VERSION?.trim();
   if (injectedVersion) {
     return injectedVersion;
   }
@@ -70,7 +72,10 @@ function getCliVersion(): string {
 }
 
 function shouldRunAsEntrypoint(): boolean {
-  if (process.env.MINI_CLAUDE_CODE_STANDALONE === "1") {
+  if (
+    process.env.LOCAL_CODE_AGENT_STANDALONE === "1" ||
+    process.env.MINI_CLAUDE_CODE_STANDALONE === "1"
+  ) {
     return true;
   }
 
@@ -92,18 +97,18 @@ const CLI_VERSION = getCliVersion();
 
 function configureHelp() {
   program.showHelpAfterError(
-    "\n示例: mini-claude-code init && mini-claude-code doctor --ping",
+    "\n示例: local-code-agent init && local-code-agent doctor --ping",
   );
   program.addHelpText(
     "after",
     `
 示例:
-  $ mini-claude-code --version
-  $ mini-claude-code init
-  $ mini-claude-code doctor
-  $ mini-claude-code doctor --ping
-  $ mini-claude-code -i
-  $ mini-claude-code "分析当前项目结构"
+  $ local-code-agent --version
+  $ local-code-agent init
+  $ local-code-agent doctor
+  $ local-code-agent doctor --ping
+  $ local-code-agent -i
+  $ local-code-agent "分析当前项目结构"
 `,
   );
 }
@@ -151,7 +156,7 @@ export async function runInitCommand(options: {
     logKeyValue("结果", result.overwritten ? "已覆盖" : "已创建");
     logKeyValue("路径", result.path);
     logHint(
-      "下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `mini-claude-code doctor --ping`。",
+      "下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `local-code-agent doctor --ping`。",
     );
   } catch (error) {
     if (
@@ -294,7 +299,7 @@ export async function runDoctorCommand(options: {
   }
   if (!runtime.openaiApiKeyConfigured) {
     logHint(
-      "可先运行 `mini-claude-code init` 生成 .env，再填写 OPENAI_API_KEY。",
+      "可先运行 `local-code-agent init` 生成 .env，再填写 OPENAI_API_KEY。",
     );
   }
   if (!allRequiredChecksPassed) {
@@ -309,7 +314,7 @@ program
   .option("--cwd <path>", "指定目标工作区目录")
   .addHelpText(
     "after",
-    "\n下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `mini-claude-code doctor --ping`。\n",
+    "\n下一步: 编辑 .env 填写 OPENAI_API_KEY，然后运行 `local-code-agent doctor --ping`。\n",
   )
   .action(async (options: { force?: boolean; cwd?: string }) => {
     await runInitCommand({ force: Boolean(options.force), cwd: options.cwd });
@@ -323,7 +328,7 @@ program
   .option("--cwd <path>", "指定目标工作区目录")
   .addHelpText(
     "after",
-    "\n建议先运行 `mini-claude-code init` 生成 .env，再执行 `doctor --ping`。\n",
+    "\n建议先运行 `local-code-agent init` 生成 .env，再执行 `doctor --ping`。\n",
   )
   .action(async (options: { json?: boolean; ping?: boolean; cwd?: string }) => {
     await runDoctorCommand({
@@ -464,7 +469,7 @@ program
   .command("release:standalone")
   .description("构建当前平台的 standalone 单文件 CLI 可执行产物")
   .option("--output-dir <path>", "输出目录，默认 dist/standalone")
-  .option("--name <name>", "输出文件名，默认 mini-claude-code")
+  .option("--name <name>", "输出文件名，默认 local-code-agent")
   .action(async (options: { outputDir?: string; name?: string }) => {
     await runReleaseStandaloneCommand({
       outputDir: options.outputDir,
@@ -707,7 +712,7 @@ export async function runTaskCommand(
 configureHelp();
 
 program
-  .name("mini-claude-code")
+  .name("local-code-agent")
   .description("一个可本地安装的代码 Agent CLI")
   .version(CLI_VERSION)
   .argument("[task]", "要执行的任务（不传则进入交互模式）")

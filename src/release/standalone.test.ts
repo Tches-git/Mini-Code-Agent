@@ -27,7 +27,7 @@ describe("buildStandaloneExecutable", () => {
     mockMkdtemp.mockReset().mockResolvedValue("/tmp/sea-work");
     mockReadFile.mockReset().mockImplementation(async (target: string) => {
       if (target === "/project/package.json") {
-        return JSON.stringify({ name: "mini-claude-code", version: "0.1.0" });
+        return JSON.stringify({ name: "local-code-agent", version: "0.1.0" });
       }
       throw new Error(`Unexpected readFile: ${target}`);
     });
@@ -69,12 +69,12 @@ describe("buildStandaloneExecutable", () => {
     expect(mockWriteFile).toHaveBeenCalledWith(
       "/tmp/sea-work/sea-config.json",
       expect.stringContaining(
-        '"output": "/project/dist/standalone/mini-claude-code"',
+        '"output": "/project/dist/standalone/local-code-agent"',
       ),
       "utf8",
     );
-    expect(result.outputPath).toBe("/project/dist/standalone/mini-claude-code");
-    expect(result.artifactFileName).toBe("mini-claude-code-linux-x64");
+    expect(result.outputPath).toBe("/project/dist/standalone/local-code-agent");
+    expect(result.artifactFileName).toBe("local-code-agent-linux-x64");
   });
 
   it("surfaces unsupported node binary as a friendly error", async () => {

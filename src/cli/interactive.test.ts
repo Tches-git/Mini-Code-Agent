@@ -31,7 +31,7 @@ const mockSpinnerStop = vi.hoisted(() => vi.fn());
 const mockSetWorkspaceRoot = vi.hoisted(() => vi.fn());
 const mockGetWorkspaceRoot = vi.hoisted(() => vi.fn(() => "/tmp/workspace"));
 const mockGetAppDataDir = vi.hoisted(() =>
-  vi.fn(() => "/tmp/home/.mini-claude-code"),
+  vi.fn(() => "/tmp/home/.local-code-agent"),
 );
 const mockReadWorkspacePackageJson = vi.hoisted(() => vi.fn());
 const mockDetectPackageManager = vi.hoisted(() => vi.fn());
@@ -120,7 +120,7 @@ vi.mock("../utils/runtime.js", () => ({
   setWorkspaceRoot: mockSetWorkspaceRoot,
   getWorkspaceRoot: mockGetWorkspaceRoot,
   getAppDataDir: mockGetAppDataDir,
-  getWorkspaceStateDir: () => "/tmp/home/.mini-claude-code/workspaces/demo",
+  getWorkspaceStateDir: () => "/tmp/home/.local-code-agent/workspaces/demo",
 }));
 
 vi.mock("../utils/logger.js", () => ({
@@ -239,7 +239,7 @@ describe("startInteractive", () => {
     mockGetWorkspaceRoot.mockReset().mockReturnValue("/tmp/workspace");
     mockGetAppDataDir
       .mockReset()
-      .mockReturnValue("/tmp/home/.mini-claude-code");
+      .mockReturnValue("/tmp/home/.local-code-agent");
     capturedConfirmCommand = null;
     capturedReviewMemory = null;
     vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
@@ -869,7 +869,7 @@ describe("startInteractive", () => {
     await startInteractive();
 
     expect(mockLogHint).toHaveBeenCalledWith(
-      expect.stringContaining("mini-claude-code init"),
+      expect.stringContaining("local-code-agent init"),
     );
   });
 
@@ -881,7 +881,7 @@ describe("startInteractive", () => {
     await startInteractive();
 
     expect(mockLogHint).toHaveBeenCalledWith(
-      expect.stringContaining("mini-claude-code doctor"),
+      expect.stringContaining("local-code-agent doctor"),
     );
   });
 

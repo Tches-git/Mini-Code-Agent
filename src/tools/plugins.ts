@@ -11,7 +11,7 @@ import { createTool } from "./create-tool.js";
 
 const PLUGIN_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{2,48}$/;
 const PLUGIN_TOOL_TIMEOUT_MS = 30_000;
-const PLUGIN_BUILD_DIR = ".mini-claude-code/.tools-build";
+const PLUGIN_BUILD_DIR = ".local-code-agent/.tools-build";
 
 type PluginToolDefinition = ToolDefinition & {
   readOnly?: boolean;
@@ -25,7 +25,12 @@ type PluginToolModule = {
 };
 
 function getPluginToolsDir(): string {
-  return path.join(getWorkspaceRoot(), ".mini-claude-code", "tools");
+  const root = getWorkspaceRoot();
+  const currentDir = path.join(root, ".local-code-agent", "tools");
+  if (existsSync(currentDir)) {
+    return currentDir;
+  }
+  return path.join(root, ".mini-claude-code", "tools");
 }
 
 function getPluginToolRunnerPath(): string {
@@ -138,7 +143,7 @@ function createPluginToolProxy(
 ): ToolDefinition {
   return createTool({
     name: toolName,
-    description: `调用项目插件工具 ${toolName}。插件位于 .mini-claude-code/tools/*.js，并在独立 Node 进程中执行。`,
+    description: `调用项目插件工具 ${toolName}。插件位于 .local-code-agent/tools/*.js，并在独立 Node 进程中执行。`,
     schema: z.record(z.unknown()),
     inputSchema: {
       type: "object",
@@ -167,7 +172,7 @@ function createPluginToolProxy(
           cwd: getWorkspaceRoot(),
           timeout: PLUGIN_TOOL_TIMEOUT_MS,
           reject: false,
-          env: { ...process.env, MINI_CLAUDE_CODE_PLUGIN_RUNNER: "1" },
+          env: { ...process.env, LOCAL_CODE_AGENT_PLUGIN_RUNNER: "1" },
         },
       );
       if ((result.exitCode ?? 1) !== 0) {

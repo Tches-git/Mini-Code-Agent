@@ -13,6 +13,7 @@ sea-prep.blob
 # Agent runtime directories
 .backup/
 .imports/
+.local-code-agent/
 .mini-claude-code/
 .claude/
 

@@ -209,12 +209,21 @@ let cachedPolicyConfig: {
 } | null = null;
 
 function getPolicyConfigPath(): string {
+  return path.join(getWorkspaceRoot(), ".local-code-agent", "policy.json");
+}
+
+function getLegacyPolicyConfigPath(): string {
   return path.join(getWorkspaceRoot(), ".mini-claude-code", "policy.json");
 }
 
 async function readPolicyConfig(): Promise<PolicyConfig> {
-  const configPath = getPolicyConfigPath();
+  let configPath = getPolicyConfigPath();
   try {
+    try {
+      await fs.access(configPath);
+    } catch {
+      configPath = getLegacyPolicyConfigPath();
+    }
     const stat = await fs.stat(configPath);
     if (
       cachedPolicyConfig?.path === configPath &&
@@ -971,7 +980,7 @@ export async function getRunCommandPolicy(
   if (policyBlockedRule) {
     return {
       decision: "block",
-      reason: `命中 .mini-claude-code/policy.json block 规则: ${policyBlockedRule}`,
+      reason: `命中 .local-code-agent/policy.json block 规则: ${policyBlockedRule}`,
       executable: "",
     };
   }
@@ -983,7 +992,7 @@ export async function getRunCommandPolicy(
   if (policyAllowedRule) {
     return {
       decision: "allow",
-      reason: `命中 .mini-claude-code/policy.json allow 规则: ${policyAllowedRule}`,
+      reason: `命中 .local-code-agent/policy.json allow 规则: ${policyAllowedRule}`,
       executable: "",
     };
   }
@@ -995,7 +1004,7 @@ export async function getRunCommandPolicy(
   if (policyGuardedRule) {
     return {
       decision: "confirm",
-      reason: `命中 .mini-claude-code/policy.json confirm 规则: ${policyGuardedRule}`,
+      reason: `命中 .local-code-agent/policy.json confirm 规则: ${policyGuardedRule}`,
       executable: "",
     };
   }

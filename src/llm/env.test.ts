@@ -13,11 +13,11 @@ describe("loadWorkspaceEnv", () => {
     vi.resetModules();
     vi.restoreAllMocks();
     mockConfig.mockReset();
-    delete process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT;
+    delete process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT;
   });
 
   it("loads .env from the configured workspace root", async () => {
-    process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT = "/tmp/workspace";
+    process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT = "/tmp/workspace";
     const { loadWorkspaceEnv } = await import("./env.js");
 
     loadWorkspaceEnv();

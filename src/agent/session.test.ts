@@ -16,16 +16,16 @@ let sessionDir: string;
 describe("session storage", () => {
   beforeEach(async () => {
     sessionDir = await mkdtemp(
-      path.join(os.tmpdir(), "mini-claude-session-test-"),
+      path.join(os.tmpdir(), "local-code-agent-session-test-"),
     );
-    process.env.MINI_CLAUDE_CODE_SESSION_DIR = sessionDir;
+    process.env.LOCAL_CODE_AGENT_SESSION_DIR = sessionDir;
     const sessions = await listSessions();
     await Promise.all(sessions.map((session) => clearSession(session.id)));
     await clearSession();
   });
 
   afterEach(() => {
-    delete process.env.MINI_CLAUDE_CODE_SESSION_DIR;
+    delete process.env.LOCAL_CODE_AGENT_SESSION_DIR;
   });
 
   it("saves and reloads latest session with metadata", async () => {

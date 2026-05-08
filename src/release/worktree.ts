@@ -325,7 +325,7 @@ export async function createSandboxBranch(options: {
   }
   const sandboxPath =
     options.sandboxPath ||
-    (await mkdtemp(path.join(os.tmpdir(), "mini-claude-code-branch-")));
+    (await mkdtemp(path.join(os.tmpdir(), "local-code-agent-branch-")));
   await runGit(["worktree", "add", "-b", branchName, sandboxPath, "HEAD"], cwd);
   const patchSummary = await getPatchSummary(options.patchPath, sandboxPath);
   await applySandboxPatch({
@@ -351,7 +351,7 @@ export async function runTaskInWorktreeSandbox(
   const originalWorkspace = getWorkspaceRoot();
   await runGit(["rev-parse", "--is-inside-work-tree"], originalWorkspace);
   const sandboxParent = await mkdtemp(
-    path.join(os.tmpdir(), "mini-claude-code-worktree-"),
+    path.join(os.tmpdir(), "local-code-agent-worktree-"),
   );
   const sandboxPath = path.join(sandboxParent, "workspace");
 

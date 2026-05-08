@@ -9,7 +9,7 @@ const DEFAULT_EXCLUDES = [
   "dist",
   ".backup",
   ".imports",
-  ".mini-claude-code",
+  ".local-code-agent",
 ];
 
 type BenchmarkIsolationMode = "in_place" | "temp_copy";
@@ -124,7 +124,7 @@ async function createTempWorkspaceCopy(options?: {
   const sourcePath = options?.sourcePath || getWorkspaceRoot();
   const parentDir =
     options?.baseTempDir ||
-    path.join(os.tmpdir(), "mini-claude-code-benchmark-");
+    path.join(os.tmpdir(), "local-code-agent-benchmark-");
   const targetDir = await mkdtemp(parentDir);
 
   await mkdir(targetDir, { recursive: true });

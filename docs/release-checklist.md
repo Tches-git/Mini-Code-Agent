@@ -1,6 +1,6 @@
 # Release Checklist
 
-This checklist defines the local and CI quality gates for publishing `mini-claude-code`.
+This checklist defines the local and CI quality gates for publishing `local-code-agent`.
 
 ## Development gate
 

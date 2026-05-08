@@ -41,7 +41,7 @@ describe("runBenchmark report summary", () => {
       const report = await runBenchmark({
         taskIds: [
           "project-structure-overview",
-          "claude-code-tooling-smoke",
+          "code-agent-tooling-smoke",
           "interactive-cli-commands-smoke",
           "file-and-command-inspection-smoke",
           "fix-readme-command",

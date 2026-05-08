@@ -141,13 +141,13 @@ export const benchmarkTasks: BenchmarkTask[] = [
     },
   },
   {
-    id: "claude-code-tooling-smoke",
-    title: "Claude Code 风格工具链 smoke",
+    id: "code-agent-tooling-smoke",
+    title: "代码 Agent 风格工具链 smoke",
     category: "read",
     prompt:
       "用新增工具能力快速检查项目：先用目录树查看 src/cli 和 src/tools 的层级，再用 glob/regex 搜索定位 interactive、filesystem、search 相关文件，最后读取其中一个文件的局部行范围。请总结这些工具分别适合什么场景，不要修改文件。",
     description:
-      "覆盖 tree_files、glob_files、search_text regex/caseSensitive、read_file offset/limit 等 Claude Code 风格只读工具链。",
+      "覆盖 tree_files、glob_files、search_text regex/caseSensitive、read_file offset/limit 等代码 Agent 风格只读工具链。",
     expectation: {
       finalTextIncludesAny: [
         ["tree", "目录树", "tree_files"],

@@ -21,8 +21,8 @@ describe("runReleaseStandaloneCommand", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     mockBuildStandaloneExecutable.mockReset().mockResolvedValue({
-      outputPath: "/tmp/out/mini-claude-code",
-      artifactFileName: "mini-claude-code-darwin-arm64",
+      outputPath: "/tmp/out/local-code-agent",
+      artifactFileName: "local-code-agent-darwin-arm64",
       configPath: "/tmp/sea-config.json",
     });
     mockLogHint.mockReset();
@@ -38,11 +38,11 @@ describe("runReleaseStandaloneCommand", () => {
 
     expect(mockLogKeyValue).toHaveBeenCalledWith(
       "可执行文件",
-      "/tmp/out/mini-claude-code",
+      "/tmp/out/local-code-agent",
     );
     expect(mockLogKeyValue).toHaveBeenCalledWith(
       "发布文件名",
-      "mini-claude-code-darwin-arm64",
+      "local-code-agent-darwin-arm64",
     );
   });
 });

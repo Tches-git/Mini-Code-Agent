@@ -8,11 +8,11 @@ let workspace: string;
 
 beforeEach(async () => {
   workspace = await mkdtemp(path.join(os.tmpdir(), "mcp-tools-test-"));
-  process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT = workspace;
+  process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT = workspace;
 });
 
 afterEach(async () => {
-  delete process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT;
+  delete process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT;
   await rm(workspace, { recursive: true, force: true });
 });
 
@@ -27,7 +27,7 @@ function extract() { const messages = []; while (true) { const idx = buffer.inde
 process.stdin.on('data', (chunk) => { buffer = Buffer.concat([buffer, chunk]); for (const msg of extract()) { if (msg.method === 'initialize') send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'test', version: '1' } } }); if (msg.method === 'tools/list') send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'echo', description: 'Echo text', inputSchema: { type: 'object', properties: { text: { type: 'string' } } }, annotations: { readOnlyHint: true } }] } }); if (msg.method === 'tools/call') send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'echo:' + msg.params.arguments.text }] } }); } });`,
       "utf8",
     );
-    const configDir = path.join(workspace, ".mini-claude-code");
+    const configDir = path.join(workspace, ".local-code-agent");
     await mkdir(configDir, { recursive: true });
     await writeFile(
       path.join(configDir, "mcp.json"),

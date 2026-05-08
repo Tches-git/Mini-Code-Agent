@@ -14,7 +14,7 @@ const mockRunBenchmarkCommand = vi.hoisted(() => vi.fn());
 const mockSetWorkspaceRoot = vi.hoisted(() => vi.fn());
 const mockGetWorkspaceRoot = vi.hoisted(() => vi.fn(() => "/tmp/workspace"));
 const mockGetAppDataDir = vi.hoisted(() =>
-  vi.fn(() => "/tmp/home/.mini-claude-code"),
+  vi.fn(() => "/tmp/home/.local-code-agent"),
 );
 
 vi.mock("../llm/env.js", () => ({
@@ -67,7 +67,7 @@ vi.mock("../utils/runtime.js", () => ({
   setWorkspaceRoot: mockSetWorkspaceRoot,
   getWorkspaceRoot: mockGetWorkspaceRoot,
   getAppDataDir: mockGetAppDataDir,
-  getWorkspaceStateDir: () => "/tmp/home/.mini-claude-code/workspaces/demo",
+  getWorkspaceStateDir: () => "/tmp/home/.local-code-agent/workspaces/demo",
 }));
 
 import {
@@ -107,7 +107,7 @@ describe("cli index output", () => {
     mockGetWorkspaceRoot.mockReset().mockReturnValue("/tmp/workspace");
     mockGetAppDataDir
       .mockReset()
-      .mockReturnValue("/tmp/home/.mini-claude-code");
+      .mockReturnValue("/tmp/home/.local-code-agent");
     vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
@@ -173,7 +173,7 @@ describe("cli index output", () => {
   it("runCli routes approvals query text through parser-aware filters", async () => {
     await runCli([
       "node",
-      "mini-claude-code",
+      "local-code-agent",
       "approvals",
       "decision:approved stats json path:src/index.ts page:2",
     ]);
@@ -191,7 +191,7 @@ describe("cli index output", () => {
   it("runCli routes sessions json command to sessions printer", async () => {
     await runCli([
       "node",
-      "mini-claude-code",
+      "local-code-agent",
       "sessions",
       "--json",
       "--sort",
@@ -208,7 +208,7 @@ describe("cli index output", () => {
   it("runCli routes session detail json command", async () => {
     await runCli([
       "node",
-      "mini-claude-code",
+      "local-code-agent",
       "session",
       "session-1",
       "--json",
@@ -219,12 +219,12 @@ describe("cli index output", () => {
   });
 
   it("runCli enters interactive mode when no task is provided", async () => {
-    await runCli(["node", "mini-claude-code"]);
+    await runCli(["node", "local-code-agent"]);
     expect(mockStartInteractive).toHaveBeenCalled();
   });
 
   it("runCli forwards explicit workspace to interactive mode", async () => {
-    await runCli(["node", "mini-claude-code", "--cwd", "/tmp/demo", "-i"]);
+    await runCli(["node", "local-code-agent", "--cwd", "/tmp/demo", "-i"]);
     expect(mockStartInteractive).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: "/tmp/demo" }),
     );

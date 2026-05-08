@@ -44,14 +44,14 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: mini-claude-code-linux-x64
-            artifact_path: dist/release-assets/mini-claude-code-linux-x64
+            artifact_name: local-code-agent-linux-x64
+            artifact_path: dist/release-assets/local-code-agent-linux-x64
           - os: macos-latest
-            artifact_name: mini-claude-code-darwin-arm64
-            artifact_path: dist/release-assets/mini-claude-code-darwin-arm64
+            artifact_name: local-code-agent-darwin-arm64
+            artifact_path: dist/release-assets/local-code-agent-darwin-arm64
           - os: windows-latest
-            artifact_name: mini-claude-code-win32-x64.exe
-            artifact_path: dist\release-assets\mini-claude-code-win32-x64.exe
+            artifact_name: local-code-agent-win32-x64.exe
+            artifact_path: dist\release-assets\local-code-agent-win32-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -80,7 +80,7 @@ jobs:
         with:
           files: |
             release-artifacts/npm-package/${{ needs.package.outputs.package_file }}
-            release-artifacts/mini-claude-code-linux-x64/mini-claude-code-linux-x64
-            release-artifacts/mini-claude-code-darwin-arm64/mini-claude-code-darwin-arm64
-            release-artifacts/mini-claude-code-win32-x64.exe/mini-claude-code-win32-x64.exe
+            release-artifacts/local-code-agent-linux-x64/local-code-agent-linux-x64
+            release-artifacts/local-code-agent-darwin-arm64/local-code-agent-darwin-arm64
+            release-artifacts/local-code-agent-win32-x64.exe/local-code-agent-win32-x64.exe
           generate_release_notes: true

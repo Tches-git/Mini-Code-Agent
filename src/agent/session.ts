@@ -8,8 +8,11 @@ import { isSummaryMessage } from "../utils/token.js";
 import type { SummaryFocus } from "./summary.js";
 
 function getSessionDir(): string {
-  return process.env.MINI_CLAUDE_CODE_SESSION_DIR?.trim()
-    ? path.resolve(process.env.MINI_CLAUDE_CODE_SESSION_DIR)
+  const configured =
+    process.env.LOCAL_CODE_AGENT_SESSION_DIR?.trim() ||
+    process.env.MINI_CLAUDE_CODE_SESSION_DIR?.trim();
+  return configured
+    ? path.resolve(configured)
     : path.join(getWorkspaceStateDir(), "sessions");
 }
 

@@ -16,7 +16,7 @@ import {
 beforeEach(() => {
   vi.restoreAllMocks();
   delete process.env.npm_config_user_agent;
-  delete process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT;
+  delete process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT;
 });
 
 describe("validation helpers", () => {
@@ -318,7 +318,7 @@ describe("getValidationPlan", () => {
     const workspace = await mkdtemp(
       path.join(os.tmpdir(), "validation-related-tests-"),
     );
-    process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT = workspace;
+    process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT = workspace;
     await fs.mkdir(path.join(workspace, "src/utils"), { recursive: true });
     await fs.mkdir(path.join(workspace, "src/cli"), { recursive: true });
     await writeFile(path.join(workspace, "package-lock.json"), "{}", "utf8");
@@ -354,7 +354,7 @@ describe("getValidationPlan", () => {
       "npm run build",
     ]);
     expect(plan.reason).toContain("测试布局推断相关测试");
-    delete process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT;
+    delete process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT;
   });
 
   it("package.json 不可读时回退默认构建命令", async () => {

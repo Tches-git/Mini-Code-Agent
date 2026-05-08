@@ -44,8 +44,8 @@ export function buildEnvTemplate(): string {
     "# RUN_COMMAND_GUARDLIST=pnpm install*;git push*",
     "# 额外阻止的命令规则",
     "# RUN_COMMAND_BLOCKLIST=npx *",
-    "# 审批日志输出路径（默认 .mini-claude-code/command-approvals.ndjson）",
-    "# RUN_COMMAND_AUDIT_LOG_PATH=.mini-claude-code/command-approvals.ndjson",
+    "# 审批日志输出路径（默认 .local-code-agent/command-approvals.ndjson）",
+    "# RUN_COMMAND_AUDIT_LOG_PATH=.local-code-agent/command-approvals.ndjson",
     "",
   ].join("\n");
 }
@@ -76,9 +76,9 @@ function getMissingEnvMessage(name: string): string {
   const runtime = getRuntimeEnvInfo();
   if (name === "OPENAI_API_KEY") {
     if (runtime.hasEnvFile) {
-      return `缺少环境变量: ${name}。已检测到 ${runtime.envFilePath}，请确认其中已配置 OPENAI_API_KEY，或先在 shell 中导出该变量。可先运行 \`mini-claude-code doctor\` 检查环境。`;
+      return `缺少环境变量: ${name}。已检测到 ${runtime.envFilePath}，请确认其中已配置 OPENAI_API_KEY，或先在 shell 中导出该变量。可先运行 \`local-code-agent doctor\` 检查环境。`;
     }
-    return `缺少环境变量: ${name}。当前目录未检测到 ${runtime.envFilePath}；可先运行 \`mini-claude-code init\` 生成模板，再填写 OPENAI_API_KEY，然后运行 \`mini-claude-code doctor\` 检查环境。`;
+    return `缺少环境变量: ${name}。当前目录未检测到 ${runtime.envFilePath}；可先运行 \`local-code-agent init\` 生成模板，再填写 OPENAI_API_KEY，然后运行 \`local-code-agent doctor\` 检查环境。`;
   }
   return `缺少环境变量: ${name}。请在 shell 或 ${runtime.envFilePath} 中设置后重试。`;
 }

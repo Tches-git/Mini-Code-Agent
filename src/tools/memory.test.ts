@@ -31,12 +31,12 @@ let tempDir: string;
 
 beforeEach(async () => {
   tempDir = await mkdtemp(path.join(os.tmpdir(), "project-memory-test-"));
-  process.env.MINI_CLAUDE_CODE_STATE_DIR = tempDir;
+  process.env.LOCAL_CODE_AGENT_STATE_DIR = tempDir;
   mockChat.mockReset();
 });
 
 afterEach(async () => {
-  delete process.env.MINI_CLAUDE_CODE_STATE_DIR;
+  delete process.env.LOCAL_CODE_AGENT_STATE_DIR;
   delete process.env.OPENAI_API_KEY;
   await rm(tempDir, { recursive: true, force: true });
 });
@@ -74,7 +74,7 @@ describe("project memory", () => {
 
   it("persists updates across reads", async () => {
     await updateProjectMemory({
-      overview: "Mini Claude Code",
+      overview: "Local Code Agent",
       preferences: ["short output"],
       commands: ["npm test"],
     });
@@ -84,7 +84,7 @@ describe("project memory", () => {
     });
 
     const memory = await readProjectMemory();
-    expect(memory.overview).toBe("Mini Claude Code");
+    expect(memory.overview).toBe("Local Code Agent");
     expect(memory.preferences).toEqual(["short output", "verify build"]);
     expect(memory.commands).toEqual(["npm test", "npm run build"]);
     expect(memory.updatedAt).toBeDefined();

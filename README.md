@@ -1,4 +1,4 @@
-# Mini Claude Code
+# Local Code Agent
 
 一个本地运行的代码 Agent CLI。它能在你的项目里理解结构、搜索代码、读写文件、执行受控命令、查看 Git diff，并在修改后自动选择 lint / test / build 做验证。
 
@@ -7,7 +7,7 @@
 ![Tests](https://img.shields.io/badge/tests-530%20passing-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-Mini Claude Code 的目标不是做一个聊天壳，而是把「理解项目 -> 计划 -> 修改 -> 验证 -> 报告 -> 可撤销」串成一个可靠的本地开发循环。
+Local Code Agent 的目标不是做一个聊天壳，而是把「理解项目 -> 计划 -> 修改 -> 验证 -> 报告 -> 可撤销」串成一个可靠的本地开发循环。
 
 ## 目录
 
@@ -28,15 +28,15 @@ Mini Claude Code 的目标不是做一个聊天壳，而是把「理解项目 ->
 
 | 能力 | 说明 |
 | --- | --- |
-| 交互式代码助手 | `mini-claude-code -i` 进入长期会话，支持 slash 命令、上下文恢复和多行输入。 |
-| 单次任务执行 | `mini-claude-code "修复这个测试"` 直接对当前项目执行一次任务。 |
+| 交互式代码助手 | `local-code-agent -i` 进入长期会话，支持 slash 命令、上下文恢复和多行输入。 |
+| 单次任务执行 | `local-code-agent "修复这个测试"` 直接对当前项目执行一次任务。 |
 | 项目理解 | 通过 `tree_files`、`project_map`、`semantic_find`、`glob_files` 和 `search_text` 快速定位代码。 |
 | 精准编辑 | 支持创建文件、整文件写入、追加、锚点插入、文本替换和按行范围替换。 |
 | 自动验证 | 修改后自动推断 lint / test / build，失败时读取 diagnostics 并尝试继续修复。 |
 | 审批与审计 | 高风险命令、工作区外路径和外部文件导入需要确认，并写入审批日志。 |
 | 会话与记忆 | 保存历史上下文、任务树、长期项目记忆，可按会话 ID 恢复。 |
 | 撤销与审查 | 支持 `/review` 按文件接受或回滚，`/undo` 撤销最近一轮 Agent 修改。 |
-| 运行报告 | 每次 Agent 运行可生成报告，支持 `/reports` 或 `mini-claude-code reports` 查看。 |
+| 运行报告 | 每次 Agent 运行可生成报告，支持 `/reports` 或 `local-code-agent reports` 查看。 |
 | 扩展工具 | 支持项目级插件工具和 MCP stdio server 工具。 |
 | 隔离执行 | 单次任务可通过 `--sandbox` 在临时 Git worktree 中执行，主工作区保持干净。 |
 
@@ -45,8 +45,8 @@ Mini Claude Code 的目标不是做一个聊天壳，而是把「理解项目 ->
 ### 从源码安装
 
 ```bash
-git clone https://github.com/Tches-git/Mini-Code-Agent.git
-cd Mini-Code-Agent
+git clone https://github.com/Tches-git/Mini-Code-Agent.git local-code-agent
+cd local-code-agent
 npm install
 npm run build
 npm link
@@ -55,7 +55,7 @@ npm link
 ### 从 tarball 安装
 
 ```bash
-npm install -g ./mini-claude-code-0.1.0.tgz
+npm install -g ./local-code-agent-0.1.0.tgz
 ```
 
 ### 初始化目标项目
@@ -63,7 +63,7 @@ npm install -g ./mini-claude-code-0.1.0.tgz
 在你想让 Agent 工作的项目目录里运行：
 
 ```bash
-mini-claude-code init
+local-code-agent init
 ```
 
 编辑生成的 `.env`：
@@ -77,8 +77,8 @@ OPENAI_API_KEY=your-api-key
 检查环境：
 
 ```bash
-mini-claude-code doctor
-mini-claude-code doctor --ping
+local-code-agent doctor
+local-code-agent doctor --ping
 ```
 
 ## 使用方式
@@ -86,34 +86,34 @@ mini-claude-code doctor --ping
 ### 交互模式
 
 ```bash
-mini-claude-code -i
+local-code-agent -i
 ```
 
 ### 执行一次任务
 
 ```bash
-mini-claude-code "分析当前项目结构，并指出最值得改进的地方"
-mini-claude-code "修复 TypeScript 错误并验证"
+local-code-agent "分析当前项目结构，并指出最值得改进的地方"
+local-code-agent "修复 TypeScript 错误并验证"
 ```
 
 ### 指定工作区
 
 ```bash
-mini-claude-code --cwd ~/work/my-project -i
-mini-claude-code --cwd ~/work/my-project "补齐 README 的使用说明"
+local-code-agent --cwd ~/work/my-project -i
+local-code-agent --cwd ~/work/my-project "补齐 README 的使用说明"
 ```
 
 ### 自动确认受保护命令
 
 ```bash
-mini-claude-code -y "运行测试并修复失败用例"
+local-code-agent -y "运行测试并修复失败用例"
 ```
 
 ### 在隔离 worktree 中执行
 
 ```bash
-mini-claude-code --sandbox "重构 validation 逻辑"
-mini-claude-code --sandbox --keep-sandbox "尝试升级构建配置"
+local-code-agent --sandbox "重构 validation 逻辑"
+local-code-agent --sandbox --keep-sandbox "尝试升级构建配置"
 ```
 
 ## 交互命令
@@ -214,7 +214,7 @@ docs/
   architecture/terminal-ui.md
   optimization-roadmap.md
   release-checklist.md
-  claude-code-gap-analysis.md
+  code-agent-gap-analysis.md
 
 scripts/
   prepare-standalone-release.mjs
@@ -233,13 +233,13 @@ scripts/
 | 记忆 | `project_memory` |
 | 子任务 | `task`、`task_batch` |
 | 任务图 | `update_tasks` |
-| 扩展 | `.mini-claude-code/tools/*.ts` 插件工具、`.mini-claude-code/mcp.json` MCP 工具 |
+| 扩展 | `.local-code-agent/tools/*.ts` 插件工具、`.local-code-agent/mcp.json` MCP 工具 |
 
 ## 配置
 
 ### `.env`
 
-`mini-claude-code init` 会生成模板：
+`local-code-agent init` 会生成模板：
 
 ```bash
 OPENAI_API_KEY=your-api-key-here
@@ -256,7 +256,7 @@ MODEL_NAME=gpt-5.4
 # RUN_COMMAND_BLOCKLIST=npx *
 
 # 审批日志输出路径
-# RUN_COMMAND_AUDIT_LOG_PATH=.mini-claude-code/command-approvals.ndjson
+# RUN_COMMAND_AUDIT_LOG_PATH=.local-code-agent/command-approvals.ndjson
 ```
 
 ### 状态目录
@@ -264,7 +264,7 @@ MODEL_NAME=gpt-5.4
 默认状态会写入用户数据目录：
 
 ```text
-~/.mini-claude-code/workspaces/<workspace-name>-<hash>/
+~/.local-code-agent/workspaces/<workspace-name>-<hash>/
   sessions/
   reports/
   command-approvals.ndjson
@@ -275,17 +275,17 @@ MODEL_NAME=gpt-5.4
 测试或 CI 中建议显式指定临时状态目录：
 
 ```bash
-MINI_CLAUDE_CODE_STATE_DIR=/tmp/mini-claude-code-state npm test
+LOCAL_CODE_AGENT_STATE_DIR=/tmp/local-code-agent-state npm test
 ```
 
 ## 扩展机制
 
 ### 项目插件工具
 
-把工具文件放到目标项目的 `.mini-claude-code/tools/` 下。`.ts` 插件会被转译到 `.mini-claude-code/.tools-build/`，构建后的 CLI 会通过独立 Node 进程运行插件。
+把工具文件放到目标项目的 `.local-code-agent/tools/` 下。`.ts` 插件会被转译到 `.local-code-agent/.tools-build/`，构建后的 CLI 会通过独立 Node 进程运行插件。
 
 ```ts
-// .mini-claude-code/tools/hello.ts
+// .local-code-agent/tools/hello.ts
 export default {
   name: "hello_tool",
   description: "返回一段问候文本",
@@ -311,7 +311,7 @@ export default {
 
 ### MCP 工具
 
-在目标项目中创建 `.mini-claude-code/mcp.json`：
+在目标项目中创建 `.local-code-agent/mcp.json`：
 
 ```json
 {
@@ -331,7 +331,7 @@ MCP server 暴露的工具会以 `mcp_<server>_<tool>` 形式加入工具列表�
 
 ## 安全模型
 
-Mini Claude Code 默认把工作区作为安全边界：
+Local Code Agent 默认把工作区作为安全边界：
 
 | 场景 | 行为 |
 | --- | --- |
@@ -347,19 +347,19 @@ Mini Claude Code 默认把工作区作为安全边界：
 
 | 命令 | 用途 |
 | --- | --- |
-| `mini-claude-code init` | 生成 `.env` 模板。 |
-| `mini-claude-code doctor [--ping]` | 检查 Node、`.env`、API key、模型和 tool-calling 连通性。 |
-| `mini-claude-code -i` | 进入交互模式。 |
-| `mini-claude-code "task"` | 执行一次自然语言任务。 |
-| `mini-claude-code approvals` | 查询审批日志，支持过滤和统计。 |
-| `mini-claude-code reports [id]` | 查看运行报告列表或详情。 |
-| `mini-claude-code sessions` | 查看可恢复会话。 |
-| `mini-claude-code session <id>` | 查看某个会话详情。 |
-| `mini-claude-code benchmark` | 运行内置 benchmark。 |
-| `mini-claude-code release:standalone` | 构建当前平台 standalone 单文件可执行产物。 |
-| `mini-claude-code sandbox:apply <patch>` | 预检或应用 sandbox 产出的 patch。 |
-| `mini-claude-code sandbox:pr-draft <patch>` | 根据 sandbox patch 生成 PR 标题和描述草稿。 |
-| `mini-claude-code sandbox:branch <patch> <branch>` | 基于 sandbox patch 创建隔离分支 worktree。 |
+| `local-code-agent init` | 生成 `.env` 模板。 |
+| `local-code-agent doctor [--ping]` | 检查 Node、`.env`、API key、模型和 tool-calling 连通性。 |
+| `local-code-agent -i` | 进入交互模式。 |
+| `local-code-agent "task"` | 执行一次自然语言任务。 |
+| `local-code-agent approvals` | 查询审批日志，支持过滤和统计。 |
+| `local-code-agent reports [id]` | 查看运行报告列表或详情。 |
+| `local-code-agent sessions` | 查看可恢复会话。 |
+| `local-code-agent session <id>` | 查看某个会话详情。 |
+| `local-code-agent benchmark` | 运行内置 benchmark。 |
+| `local-code-agent release:standalone` | 构建当前平台 standalone 单文件可执行产物。 |
+| `local-code-agent sandbox:apply <patch>` | 预检或应用 sandbox 产出的 patch。 |
+| `local-code-agent sandbox:pr-draft <patch>` | 根据 sandbox patch 生成 PR 标题和描述草稿。 |
+| `local-code-agent sandbox:branch <patch> <branch>` | 基于 sandbox patch 创建隔离分支 worktree。 |
 
 ## 开发与发布
 
@@ -400,7 +400,7 @@ npm test       530 tests passed
 在受限环境中运行测试时，建议像这样指定状态目录：
 
 ```bash
-MINI_CLAUDE_CODE_STATE_DIR=/private/tmp/mini-claude-code-test-state npm test
+LOCAL_CODE_AGENT_STATE_DIR=/private/tmp/local-code-agent-test-state npm test
 ```
 
 ## License

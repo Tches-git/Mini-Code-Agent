@@ -4,7 +4,7 @@ import path from "node:path";
 import { execa } from "execa";
 
 const DEFAULT_OUTPUT_DIR = path.join("dist", "standalone");
-const DEFAULT_EXECUTABLE_NAME = "mini-claude-code";
+const DEFAULT_EXECUTABLE_NAME = "local-code-agent";
 
 function getExecutableExtension(): string {
   return process.platform === "win32" ? ".exe" : "";
@@ -71,7 +71,7 @@ async function buildJavaScriptBundle(
       "--target=node22",
       "--format=cjs",
       `--outfile=${bundlePath}`,
-      `--banner:js=process.env.MINI_CLAUDE_CODE_STANDALONE="1";process.env.MINI_CLAUDE_CODE_VERSION=${JSON.stringify(version)};`,
+      `--banner:js=process.env.LOCAL_CODE_AGENT_STANDALONE="1";process.env.LOCAL_CODE_AGENT_VERSION=${JSON.stringify(version)};process.env.MINI_CLAUDE_CODE_STANDALONE="1";process.env.MINI_CLAUDE_CODE_VERSION=${JSON.stringify(version)};`,
     ],
     { stdio: "inherit" },
   );
@@ -136,7 +136,7 @@ export async function buildStandaloneExecutable(
     options?.executableName || packageJson.name || DEFAULT_EXECUTABLE_NAME;
   const outputPath = getOutputPath(outputDir, executableName);
   const tempDir = await mkdtemp(
-    path.join(os.tmpdir(), "mini-claude-code-sea-"),
+    path.join(os.tmpdir(), "local-code-agent-sea-"),
   );
   const artifactFileName = getPlatformArtifactFileName(executableName);
 

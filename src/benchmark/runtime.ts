@@ -19,6 +19,6 @@ export function withBenchmarkWorkspace<T>(
 export function resolveBenchmarkReportPath(outputPath?: string): string {
   return (
     outputPath ||
-    path.join(getWorkspaceRoot(), ".mini-claude-code", "benchmark-report.json")
+    path.join(getWorkspaceRoot(), ".local-code-agent", "benchmark-report.json")
   );
 }

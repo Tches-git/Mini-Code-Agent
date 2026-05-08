@@ -225,7 +225,7 @@ export function logBanner() {
   console.log(chalk.cyan.bold("  ╔══════════════════════════════════════╗"));
   console.log(
     chalk.cyan.bold("  ║") +
-      chalk.white.bold("     Mini Claude Code · 交互模式      ") +
+      chalk.white.bold("     Local Code Agent · 交互模式      ") +
       chalk.cyan.bold("║"),
   );
   console.log(chalk.cyan.bold("  ╚══════════════════════════════════════╝"));

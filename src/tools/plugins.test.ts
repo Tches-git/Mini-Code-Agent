@@ -8,17 +8,17 @@ let workspace: string;
 
 beforeEach(async () => {
   workspace = await mkdtemp(path.join(os.tmpdir(), "plugin-tools-test-"));
-  process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT = workspace;
+  process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT = workspace;
 });
 
 afterEach(async () => {
-  delete process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT;
+  delete process.env.LOCAL_CODE_AGENT_WORKSPACE_ROOT;
   await rm(workspace, { recursive: true, force: true });
 });
 
 describe("plugin tools", () => {
-  it("loads project plugin tools from .mini-claude-code/tools", async () => {
-    const toolsDir = path.join(workspace, ".mini-claude-code", "tools");
+  it("loads project plugin tools from .local-code-agent/tools", async () => {
+    const toolsDir = path.join(workspace, ".local-code-agent", "tools");
     const { mkdir } = await import("node:fs/promises");
     await mkdir(toolsDir, { recursive: true });
     await writeFile(
@@ -45,7 +45,7 @@ describe("plugin tools", () => {
   });
 
   it("rejects plugin tools that override builtins", async () => {
-    const toolsDir = path.join(workspace, ".mini-claude-code", "tools");
+    const toolsDir = path.join(workspace, ".local-code-agent", "tools");
     const { mkdir } = await import("node:fs/promises");
     await mkdir(toolsDir, { recursive: true });
     await writeFile(
