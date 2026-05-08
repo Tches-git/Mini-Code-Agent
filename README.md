@@ -142,59 +142,147 @@ local-code-agent --sandbox --keep-sandbox "尝试升级构建配置"
 ## 架构总览
 
 ```mermaid
-flowchart LR
-  User["开发者"] --> CLI["CLI 层<br/>Commander + Interactive Shell"]
-  CLI --> Orchestrator["AgentOrchestrator<br/>模型循环 / 工具调度 / 状态管理"]
-  Orchestrator --> LLM["OpenAI 兼容 LLM<br/>chat completions + tool calling"]
-  LLM --> Orchestrator
+flowchart TB
+  classDef entry fill:#eff6ff,stroke:#2563eb,color:#0f172a,stroke-width:1px
+  classDef core fill:#fef3c7,stroke:#d97706,color:#111827,stroke-width:2px
+  classDef llm fill:#f5f3ff,stroke:#7c3aed,color:#1f2937,stroke-width:1px
+  classDef tool fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:1px
+  classDef state fill:#f8fafc,stroke:#64748b,color:#0f172a,stroke-width:1px
+  classDef guard fill:#fff1f2,stroke:#e11d48,color:#7f1d1d,stroke-width:1px
 
-  Orchestrator --> Tools["工具层"]
-  Tools --> FileTools["文件工具<br/>Read / Edit / Import"]
-  Tools --> SearchTools["搜索工具<br/>Glob / Grep / Project Map / Semantic Find"]
-  Tools --> CommandTools["命令工具<br/>Policy / Audit / Output Paging"]
-  Tools --> GitTools["Git 工具<br/>Status / Diff / Log / Add / Commit"]
-  Tools --> RuntimeTools["Diagnostics / Memory / Subtasks / Task Graph"]
-  Tools --> ExtensionTools["插件工具 + MCP 工具"]
+  Developer(("开发者"))
 
-  Orchestrator --> Validation["自动验证<br/>lint / test / build / diagnostics"]
-  Orchestrator --> State["本地状态"]
-  State --> Sessions["Sessions"]
-  State --> Reports["Run Reports"]
-  State --> Memory["Project Memory"]
-  State --> Approvals["Approval Audit"]
-  State --> Undo["Undo Snapshots"]
+  subgraph Entry["入口层"]
+    direction LR
+    OneShot["单次任务<br/>local-code-agent task"]
+    Interactive["交互会话<br/>local-code-agent -i"]
+    Sandbox["隔离执行<br/>--sandbox worktree"]
+  end
+
+  subgraph Core["编排核心"]
+    direction TB
+    Intent["意图识别<br/>analysis / edit / release"]
+    Orchestrator["AgentOrchestrator<br/>模型循环 / 工具调度 / 执行预算"]
+    TaskGraph["任务图<br/>plan / execute / retry"]
+  end
+
+  subgraph Model["模型接口"]
+    direction TB
+    LLM["OpenAI 兼容接口<br/>streaming chat + tool calling"]
+  end
+
+  subgraph Tools["工具矩阵"]
+    direction LR
+    FileTools["文件<br/>read / edit / import"]
+    SearchTools["搜索<br/>tree / glob / grep / map"]
+    CommandTools["命令<br/>policy / audit / output paging"]
+    GitTools["Git<br/>status / diff / log / commit"]
+    ExtendTools["扩展<br/>plugins / MCP"]
+  end
+
+  subgraph Runtime["质量与状态"]
+    direction LR
+    Validation["自动验证<br/>lint / test / build / diagnostics"]
+    Memory["项目记忆<br/>memory / sessions"]
+    Reports["运行报告<br/>reports / approvals"]
+    Undo["回滚能力<br/>review / undo snapshots"]
+  end
+
+  subgraph Guard["安全边界"]
+    direction LR
+    Workspace["工作区边界"]
+    Approval["用户审批"]
+    Audit["审计日志"]
+  end
+
+  Developer --> OneShot
+  Developer --> Interactive
+  Developer --> Sandbox
+  OneShot --> Intent
+  Interactive --> Intent
+  Sandbox --> Intent
+  Intent --> Orchestrator
+  Orchestrator <--> LLM
+  Orchestrator --> TaskGraph
+  Orchestrator --> FileTools
+  Orchestrator --> SearchTools
+  Orchestrator --> CommandTools
+  Orchestrator --> GitTools
+  Orchestrator --> ExtendTools
+  Orchestrator --> Validation
+  Orchestrator --> Memory
+  Orchestrator --> Reports
+  Orchestrator --> Undo
+  FileTools --> Workspace
+  CommandTools --> Approval
+  GitTools --> Approval
+  ExtendTools --> Audit
+  Workspace --> Reports
+  Approval --> Reports
+  Audit --> Reports
+
+  class Developer entry
+  class OneShot,Interactive,Sandbox entry
+  class Intent,Orchestrator,TaskGraph core
+  class LLM llm
+  class FileTools,SearchTools,CommandTools,GitTools,ExtendTools tool
+  class Validation,Memory,Reports,Undo state
+  class Workspace,Approval,Audit guard
+
+  style Entry fill:#f8fbff,stroke:#bfdbfe,stroke-width:1px
+  style Core fill:#fff8e6,stroke:#f59e0b,stroke-width:1px
+  style Model fill:#faf5ff,stroke:#c4b5fd,stroke-width:1px
+  style Tools fill:#f0fdf4,stroke:#86efac,stroke-width:1px
+  style Runtime fill:#f8fafc,stroke:#cbd5e1,stroke-width:1px
+  style Guard fill:#fff7f7,stroke:#fecdd3,stroke-width:1px
 ```
 
 ## 执行流程
 
 ```mermaid
-sequenceDiagram
-  participant U as 开发者
-  participant C as CLI
-  participant A as AgentOrchestrator
-  participant M as LLM
-  participant T as Tools
-  participant V as Validation
-  participant S as Local State
+flowchart LR
+  classDef start fill:#eff6ff,stroke:#2563eb,color:#0f172a,stroke-width:2px
+  classDef loop fill:#f5f3ff,stroke:#7c3aed,color:#1f2937,stroke-width:1px
+  classDef tool fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:1px
+  classDef check fill:#fff7ed,stroke:#ea580c,color:#7c2d12,stroke-width:1px
+  classDef done fill:#f0fdf4,stroke:#16a34a,color:#14532d,stroke-width:2px
+  classDef risk fill:#fff1f2,stroke:#e11d48,color:#7f1d1d,stroke-width:1px
 
-  U->>C: 输入任务
-  C->>A: 创建或恢复会话
-  A->>S: 注入项目记忆和相关历史
-  A->>M: 发送消息与工具定义
-  M-->>A: 返回文本或 tool_calls
-  A->>T: 执行只读或修改工具
-  T-->>A: 返回结果与 diff
-  A->>M: 回灌工具结果
-  alt 修改了文件
-    A->>V: 推断并运行验证命令
-    V-->>A: 返回成功或失败 diagnostics
-    alt 验证失败且未超过修复轮数
-      A->>M: 回灌失败信息，请求继续修复
-    end
+  Start(["输入任务"]):::start
+  Context["加载上下文<br/>env / session / memory"]:::loop
+  Plan["选择模式<br/>analysis / edit / refactor / release"]:::loop
+  Think["模型思考<br/>文本或 tool calls"]:::loop
+  ToolGate{"需要工具?"}:::check
+  ReadOnly["只读探索<br/>tree / glob / search / read"]:::tool
+  Modify["受控修改<br/>edit / command / git"]:::tool
+  Approval{"触碰风险边界?"}:::risk
+  Validate{"修改了文件?"}:::check
+  AutoCheck["自动验证<br/>lint / test / build"]:::check
+  Repair{"验证失败且<br/>可继续修复?"}:::risk
+  Report["保存结果<br/>report / session / undo"]:::done
+  End(["展示摘要与 diff"]):::done
+
+  Start --> Context --> Plan --> Think --> ToolGate
+  ToolGate -- 否 --> Report
+  ToolGate -- 只读 --> ReadOnly --> Think
+  ToolGate -- 修改 --> Approval
+  Approval -- 需要确认 --> Modify
+  Approval -- 安全通过 --> Modify
+  Modify --> Validate
+  Validate -- 否 --> Report
+  Validate -- 是 --> AutoCheck --> Repair
+  Repair -- 是 --> Think
+  Repair -- 否 --> Report --> End
+
+  subgraph Feedback["反馈闭环"]
+    direction LR
+    Think
+    ReadOnly
+    Modify
+    AutoCheck
   end
-  A->>S: 保存 session、report、memory、undo 快照
-  A-->>C: 返回最终结果
-  C-->>U: 展示摘要、步骤和 diff
+
+  style Feedback fill:#fafafa,stroke:#d4d4d8,stroke-dasharray:5 5
 ```
 
 ## 项目结构
