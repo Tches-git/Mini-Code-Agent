@@ -45,6 +45,12 @@ export type ApprovalRequest =
   | FileImportConfirmationRequest
   | ExternalPathConfirmationRequest;
 
+export type ApprovalScope = "once" | "task_exact" | "task_kind";
+
+export type ApprovalResponse =
+  | boolean
+  | { approved: boolean; scope?: ApprovalScope };
+
 export type DiffEntry = {
   path: string;
   summary: string;
@@ -90,6 +96,9 @@ export type ToolDefinition = {
   description: string;
   inputSchema: Record<string, unknown>;
   execute: (input: Record<string, unknown>) => Promise<string | ToolResult>;
+  readOnly?: boolean;
+  modifiesFiles?: boolean;
+  parallelizable?: boolean;
 };
 
 export type AgentEvent =

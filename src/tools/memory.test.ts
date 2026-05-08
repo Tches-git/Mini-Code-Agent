@@ -13,6 +13,7 @@ vi.mock("../llm/client.js", () => ({
 
 import {
   editProjectMemory,
+  editProjectMemoryCandidateText,
   extractProjectMemoryCandidates,
   getProjectMemoryContext,
   normalizeProjectMemory,
@@ -22,6 +23,7 @@ import {
   reviewProjectMemoryEdit,
   reviewProjectMemoryUpdate,
   sanitizeMemoryText,
+  selectProjectMemoryCandidates,
   updateProjectMemory,
 } from "./memory.js";
 
@@ -243,6 +245,65 @@ describe("project memory", () => {
 
     expect(memory.facts).toHaveLength(1);
     expect(memory.facts?.[0]?.text).toBe("src/tools/memory.ts");
+  });
+
+  it("builds selectable automatic memory review items", async () => {
+    await updateProjectMemory({
+      facts: [
+        {
+          text: "最近关注文件: src/tools/memory.ts",
+          source: "manual",
+          confidence: 0.8,
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+    const reviewHandler = vi.fn().mockResolvedValue("reject");
+
+    await rememberProjectMemoryFromRunWithReview(
+      {
+        finalText: "完成，保持 concise 输出。",
+        validationCommands: ["npm test"],
+        modifiedPaths: ["src/tools/memory.ts"],
+      },
+      reviewHandler,
+    );
+
+    expect(reviewHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            key: "command:npm test",
+            label: "命令: npm test",
+          }),
+          expect.objectContaining({
+            kind: "fact",
+            conflict: expect.stringContaining("可能更新已有事实"),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("selects and edits automatic memory candidates", () => {
+    const candidates = extractProjectMemoryCandidates({
+      finalText: "完成，保持 concise 输出。",
+      validationCommands: ["npm test", "npm run build"],
+      modifiedPaths: ["src/tools/memory.ts"],
+    });
+    const edited = editProjectMemoryCandidateText(
+      candidates,
+      "command:npm test",
+      "npm run test:focused",
+    );
+
+    expect(
+      selectProjectMemoryCandidates(edited, ["command:npm run test:focused"]),
+    ).toEqual({
+      preferences: [],
+      commands: ["npm run test:focused"],
+      facts: [],
+    });
   });
 
   it("reviews automatic memory before saving", async () => {

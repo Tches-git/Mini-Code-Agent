@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   readLintDiagnostics,
@@ -13,6 +14,7 @@ import {
   readWorkspacePackageJson,
   type WorkspacePackageJson,
 } from "../utils/project-tooling.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 
 const DEFAULT_VALIDATION_COMMAND = "npm run build";
 const VALIDATION_SCRIPT_ORDER = ["lint", "test", "build"] as const;
@@ -50,6 +52,7 @@ type ValidationInference = {
   scripts: Set<ValidationScriptName>;
   reason: string;
   testPaths: string[];
+  changedSourcePaths: string[];
 };
 
 type ValidationDiagnostics = {
@@ -208,12 +211,14 @@ function inferValidationScripts(changedPaths: string[]): ValidationInference {
       scripts: new Set(VALIDATION_SCRIPT_ORDER),
       reason: "无法识别本轮修改文件，执行默认完整验证",
       testPaths: [],
+      changedSourcePaths: [],
     };
   let sawConfig = false,
     sawSource = false,
     sawTests = false,
     sawNonDocChange = false;
   const testPaths: string[] = [];
+  const changedSourcePaths: string[] = [];
   for (const changedPath of changedPaths) {
     const normalized = normalizeFilePath(changedPath);
     if (isDocumentationPath(normalized)) continue;
@@ -229,39 +234,135 @@ function inferValidationScripts(changedPaths: string[]): ValidationInference {
     }
     if (isSourcePath(normalized)) {
       sawSource = true;
+      changedSourcePaths.push(normalized);
       continue;
     }
     sawSource = true;
+    changedSourcePaths.push(normalized);
   }
   if (!sawNonDocChange)
     return {
       scripts: new Set(),
       reason: "仅检测到文档或说明文件变更，跳过自动验证",
       testPaths: [],
+      changedSourcePaths: [],
     };
   if (sawConfig)
     return {
       scripts: new Set(VALIDATION_SCRIPT_ORDER),
       reason: "检测到依赖或工具链配置变更，执行 lint/test/build 全量验证",
       testPaths: [],
+      changedSourcePaths: [],
     };
   if (sawSource && sawTests)
     return {
       scripts: new Set<ValidationScriptName>(["lint", "test", "build"]),
       reason: "同时修改了源码和测试，执行完整验证",
       testPaths,
+      changedSourcePaths,
     };
   if (sawSource)
     return {
-      scripts: new Set<ValidationScriptName>(["lint", "build"]),
-      reason: "检测到源码或配置文件变更，执行 lint/build 验证",
+      scripts: new Set<ValidationScriptName>(["lint", "test", "build"]),
+      reason: "检测到源码变更，优先选择依赖相关测试并执行 lint/test/build 验证",
       testPaths: [],
+      changedSourcePaths,
     };
   return {
     scripts: new Set<ValidationScriptName>(["lint", "test"]),
     reason: "仅检测到测试相关变更，执行 lint/test 验证",
     testPaths,
+    changedSourcePaths,
   };
+}
+
+function isCandidateTestPath(filePath: string): boolean {
+  return isTestPath(filePath) && /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(filePath);
+}
+
+function stripExtension(filePath: string): string {
+  return filePath.replace(/\.[^.]+$/, "");
+}
+
+function stripTestSuffix(filePath: string): string {
+  return stripExtension(filePath).replace(/\.(test|spec)$/i, "");
+}
+
+function getCandidateTestStems(sourcePath: string): string[] {
+  const normalized = normalizeFilePath(sourcePath);
+  const ext = path.extname(normalized);
+  const withoutExt = normalized.slice(0, -ext.length);
+  const basename = path.basename(withoutExt);
+  const dirname = path.dirname(withoutExt);
+  const sourceDirname = dirname.replace(/(^|\/)src(\/|$)/, "$1");
+  const candidates = [
+    withoutExt,
+    path.join(dirname, "__tests__", basename),
+    path.join(dirname, "tests", basename),
+    path.join(dirname, "test", basename),
+    path.join(dirname.replace(/(^|\/)src(\/|$)/, "$1test$2"), basename),
+    path.join(dirname.replace(/(^|\/)src(\/|$)/, "$1tests$2"), basename),
+    path.join("test", sourceDirname, basename),
+    path.join("tests", sourceDirname, basename),
+  ];
+  return Array.from(new Set(candidates.map(normalizeFilePath)));
+}
+
+async function listWorkspaceTestFiles(): Promise<string[]> {
+  const root = getWorkspaceRoot();
+  const ignored = new Set([
+    ".git",
+    "node_modules",
+    "dist",
+    ".backup",
+    ".imports",
+  ]);
+  const results: string[] = [];
+  async function visit(dir: string, depth: number) {
+    if (depth > 8 || results.length > 2000) return;
+    let entries: Array<{
+      name: string;
+      isDirectory: () => boolean;
+      isFile: () => boolean;
+    }>;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (ignored.has(entry.name)) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(fullPath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const relative = normalizeFilePath(path.relative(root, fullPath));
+      if (isCandidateTestPath(relative)) results.push(relative);
+    }
+  }
+  await visit(root, 0);
+  return results;
+}
+
+async function inferRelatedTestPaths(sourcePaths: string[]): Promise<string[]> {
+  if (sourcePaths.length === 0) return [];
+  const tests = await listWorkspaceTestFiles();
+  const byStem = new Map<string, string[]>();
+  for (const testPath of tests) {
+    const stem = stripTestSuffix(testPath);
+    byStem.set(stem, [...(byStem.get(stem) || []), testPath]);
+  }
+  const related = new Set<string>();
+  for (const sourcePath of sourcePaths) {
+    for (const candidateStem of getCandidateTestStems(sourcePath)) {
+      for (const testPath of byStem.get(candidateStem) || []) {
+        related.add(testPath);
+      }
+    }
+  }
+  return Array.from(related).slice(0, MAX_TARGETED_TEST_FILES);
 }
 
 function quoteCommandArg(value: string): string {
@@ -393,6 +494,11 @@ export async function getValidationPlan(
       scripts,
       tooling.validation.buildScripts,
     );
+    const relatedTestPaths = await inferRelatedTestPaths(
+      inferred.changedSourcePaths,
+    );
+    const targetedTestPaths =
+      inferred.testPaths.length > 0 ? inferred.testPaths : relatedTestPaths;
     const available = {
       lint: lintScriptName,
       test:
@@ -420,7 +526,7 @@ export async function getValidationPlan(
         const targetedCommand = buildTargetedTestCommand(
           packageManager,
           testScript,
-          inferred.testPaths,
+          targetedTestPaths,
           packageJson,
           scriptName,
         );
@@ -438,7 +544,7 @@ export async function getValidationPlan(
         steps,
         reason:
           targetedTestCount > 0
-            ? `${inferred.reason}；检测到测试文件改动，优先运行受影响测试文件`
+            ? `${inferred.reason}；${inferred.testPaths.length > 0 ? "检测到测试文件改动" : "根据修改文件和测试布局推断相关测试"}，优先运行受影响测试文件`
             : inferred.reason,
       };
     }

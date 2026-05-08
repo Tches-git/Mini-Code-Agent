@@ -45,6 +45,7 @@ import {
 import { runBenchmarkCommand } from "./benchmark.js";
 import { startInteractive } from "./interactive.js";
 import { runReleaseStandaloneCommand } from "./release.js";
+import { printRunReports } from "./reports.js";
 import { printSessionDetail, printSessions } from "./sessions.js";
 
 const program = new Command();
@@ -394,6 +395,24 @@ program
       await printApprovalLog(filters, {
         json: parsed?.options.json ?? Boolean(options.json),
         stats: parsed?.options.stats ?? Boolean(options.stats),
+      });
+    },
+  );
+
+program
+  .command("reports [id]")
+  .description("查看 Agent 运行报告列表或详情")
+  .option("--limit <number>", "最多显示多少条", parsePositiveInteger, 10)
+  .option("--json", "以 JSON 输出")
+  .action(
+    async (
+      id: string | undefined,
+      options: { limit: number; json?: boolean },
+    ) => {
+      await printRunReports({
+        id,
+        limit: options.limit,
+        json: Boolean(options.json),
       });
     },
   );

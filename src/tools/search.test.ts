@@ -599,17 +599,44 @@ describe("project map helpers", () => {
         specifier: "./agent",
         symbols: ["defaultAgent", "createAgent", "runAgent"],
         bindings: [
-          { imported: "default", local: "defaultAgent" },
-          { imported: "createAgent", local: "createAgent" },
-          { imported: "runAgent", local: "run" },
+          { imported: "default", local: "defaultAgent", typeOnly: false },
+          { imported: "createAgent", local: "createAgent", typeOnly: false },
+          { imported: "runAgent", local: "run", typeOnly: false },
         ],
       },
       {
         specifier: "../utils/helper",
         symbols: ["helper", "format"],
         bindings: [
-          { imported: "helper", local: "helper" },
-          { imported: "format", local: "print" },
+          { imported: "helper", local: "helper", typeOnly: false },
+          { imported: "format", local: "print", typeOnly: false },
+        ],
+      },
+    ]);
+  });
+
+  it("AST 提取标记 type-only import/export 绑定", () => {
+    const content = [
+      "import type { SessionApi } from './session';",
+      "export type { SessionConfig } from './config';",
+    ].join("\n");
+    expect(extractImportedSymbolsWithAst(content, "file.ts")).toEqual([
+      {
+        specifier: "./session",
+        symbols: ["SessionApi"],
+        bindings: [
+          { imported: "SessionApi", local: "SessionApi", typeOnly: true },
+        ],
+      },
+      {
+        specifier: "./config",
+        symbols: ["SessionConfig"],
+        bindings: [
+          {
+            imported: "SessionConfig",
+            local: "SessionConfig",
+            typeOnly: true,
+          },
         ],
       },
     ]);
@@ -629,19 +656,132 @@ describe("project map helpers", () => {
     ]);
   });
 
-  it("AST 提取支持调用和注释信号", () => {
+  it("AST 提取支持调用、别名调用和注释信号", () => {
     const content = [
       "// restores persisted session state",
-      "export function run() {",
-      "  restorePersistedSessionById();",
-      "  taskGraph.restore();",
+      "export function run(flag: boolean) {",
+      "  const useRestore = true;",
+      "  const restoreAlias = useRestore ? restorePersistedSessionById : loadSession;",
+      "  let later = restorePersistedSessionById;",
+      "  later = loadSession;",
+      "  const factoryAlias = makeSessionFactory();",
+      "  const graph = taskGraph;",
+      "  const { restore: runRestore } = taskGraph;",
+      "  const casted = (restorePersistedSessionById as () => void);",
+      "  const saveKey = 'sa' + 've';",
+      "  const validateKey = `vali$" + "{'date'}`;",
+      "  const keys = { archive: 'archive' };",
+      "  const handlers = [restorePersistedSessionById, saveSession];",
+      "  const handlerEntries = [{ run: validateSession }, { run: archiveSession }];",
+      "  function chooseSession() { return restorePersistedSessionById; }",
+      "  const chooseLater = () => loadSession;",
+      "  function identity(fn: () => void) { return fn; }",
+      "  function invoke(fn: () => void) { fn(); }",
+      "  function nestedInvoke(fn: () => void) { invoke(fn); }",
+      "  const invokeLater = (fn: () => void) => () => fn;",
+      "  const wrapNested = (fn: () => void) => { const inner = () => fn; return () => inner(); };",
+      "  const registry = { restore: restorePersistedSessionById, ['load']: loadSession, [saveKey]: saveSession, [validateKey]: validateSession, [keys.archive]: archiveSession };",
+      "  factoryAlias.create();",
+      "  registry.restore();",
+      "  registry['load']();",
+      "  registry[saveKey]();",
+      "  registry[validateKey]();",
+      "  registry[keys.archive]();",
+      "  registry[dynamicKey]();",
+      "  if (useRestore) { restorePersistedSessionById(); } else { loadSession(); }",
+      "  if (!useRestore) { neverSession(); } else { saveSession(); }",
+      "  for (const item of sessions) { item.restore(); }",
+      "  for (const handler of handlers) { handler(); }",
+      "  for (const entry of handlerEntries) { entry.run(); }",
+      "  chooseSession()();",
+      "  chooseLater()();",
+      "  identity(saveSession)();",
+      "  invoke(validateSession);",
+      "  nestedInvoke(archiveSession);",
+      "  invokeLater(loadSession)()();",
+      "  wrapNested(validateSession)()();",
+      "  casted();",
+      "  restoreAlias();",
+      "  later();",
+      "  runRestore();",
+      "  graph.restore();",
       "}",
     ].join("\n");
     expect(extractAstCallsAndComments(content, "file.ts")).toEqual({
-      calls: ["restore", "restorePersistedSessionById"],
+      calls: [
+        "archiveSession",
+        "chooseLater",
+        "chooseSession",
+        "create",
+        "fn",
+        "identity",
+        "inner",
+        "invoke",
+        "invokeLater",
+        "loadSession",
+        "makeSessionFactory",
+        "nestedInvoke",
+        "restore",
+        "restorePersistedSessionById",
+        "saveSession",
+        "validateSession",
+        "wrapNested",
+      ],
       comments: ["restores persisted session state"],
       localCallEdges: [
+        { caller: "run", callee: "makeSessionFactory", via: "local" },
+        { caller: "invoke", callee: "fn", via: "local" },
+        { caller: "nestedInvoke", callee: "invoke", via: "local" },
+        { caller: "nestedInvoke", callee: "fn", via: "local" },
+        { caller: "wrapNested", callee: "inner", via: "local" },
+        {
+          caller: "run",
+          callee: "create",
+          via: "local",
+          receiver: "makeSessionFactory",
+        },
         { caller: "run", callee: "restorePersistedSessionById", via: "local" },
+        { caller: "run", callee: "loadSession", via: "local" },
+        { caller: "run", callee: "saveSession", via: "local" },
+        { caller: "run", callee: "validateSession", via: "local" },
+        { caller: "run", callee: "archiveSession", via: "local" },
+        { caller: "run", callee: "restorePersistedSessionById", via: "local" },
+        { caller: "run", callee: "loadSession", via: "local" },
+        { caller: "run", callee: "saveSession", via: "local" },
+        { caller: "run", callee: "validateSession", via: "local" },
+        { caller: "run", callee: "archiveSession", via: "local" },
+        { caller: "run", callee: "restorePersistedSessionById", via: "local" },
+        { caller: "run", callee: "saveSession", via: "local" },
+        { caller: "run", callee: "restore", via: "local", receiver: "item" },
+        { caller: "run", callee: "restorePersistedSessionById", via: "local" },
+        { caller: "run", callee: "saveSession", via: "local" },
+        { caller: "run", callee: "validateSession", via: "local" },
+        { caller: "run", callee: "archiveSession", via: "local" },
+        { caller: "run", callee: "restorePersistedSessionById", via: "local" },
+        { caller: "run", callee: "chooseSession", via: "local" },
+        { caller: "run", callee: "loadSession", via: "local" },
+        { caller: "run", callee: "chooseLater", via: "local" },
+        { caller: "run", callee: "saveSession", via: "local" },
+        { caller: "run", callee: "identity", via: "local" },
+        { caller: "run", callee: "invoke", via: "local" },
+        { caller: "run", callee: "validateSession", via: "local" },
+        { caller: "run", callee: "nestedInvoke", via: "local" },
+        { caller: "run", callee: "archiveSession", via: "local" },
+        { caller: "run", callee: "loadSession", via: "local" },
+        { caller: "run", callee: "loadSession", via: "local" },
+        { caller: "run", callee: "invokeLater", via: "local" },
+        { caller: "run", callee: "validateSession", via: "local" },
+        { caller: "run", callee: "validateSession", via: "local" },
+        { caller: "run", callee: "wrapNested", via: "local" },
+        { caller: "run", callee: "restorePersistedSessionById", via: "local" },
+        { caller: "run", callee: "restorePersistedSessionById", via: "local" },
+        { caller: "run", callee: "loadSession", via: "local" },
+        {
+          caller: "run",
+          callee: "restore",
+          via: "local",
+          receiver: "taskGraph",
+        },
         {
           caller: "run",
           callee: "restore",
@@ -728,18 +868,19 @@ describe("project map helpers", () => {
     expect(result[0]).toHaveProperty("score");
   });
 
-  it("project map 可以把导入函数调用边解析到跨文件目标", async () => {
+  it("project map 可以把导入函数调用边解析到跨文件目标并忽略类型导入", async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "project-map-calls-"));
     await fs.writeFile(
       path.join(tempDir, "session.ts"),
-      "export function restoreSession() {}\n",
+      "export function restoreSession() {}\nexport type SessionApi = {};\n",
       "utf8",
     );
     await fs.writeFile(
       path.join(tempDir, "runner.ts"),
       [
         "import { restoreSession } from './session';",
-        "export function run() { restoreSession(); }",
+        "import type { SessionApi } from './session';",
+        "export function run() { restoreSession(); SessionApi(); }",
       ].join("\n"),
       "utf8",
     );
@@ -751,6 +892,11 @@ describe("project map helpers", () => {
       caller: "run",
       callee: "restoreSession",
       via: "session.ts",
+    });
+    expect(runner?.callEdges).toContainEqual({
+      caller: "run",
+      callee: "SessionApi",
+      via: "local",
     });
   });
 
@@ -783,7 +929,53 @@ describe("project map helpers", () => {
     expect(runner?.callEdges).toContainEqual({
       caller: "run",
       callee: "restoreSession",
-      via: "index.ts",
+      via: "session.ts",
+    });
+  });
+
+  it("project map 可以解析多级默认导出重导出调用边目标", async () => {
+    tempDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "project-map-default-reexport-calls-"),
+    );
+    await fs.writeFile(
+      path.join(tempDir, "session.ts"),
+      "export default function restoreSession() {}\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "middle.ts"),
+      "export { default as restoreSession } from './session';\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "index.ts"),
+      "export { restoreSession } from './middle';\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(tempDir, "runner.ts"),
+      [
+        "import { restoreSession } from './index';",
+        "export function run(flag: boolean) {",
+        "  const resume = flag ? restoreSession : fallbackSession;",
+        "  resume();",
+        "}",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await buildProjectMap(tempDir, true, { maxFiles: 10 });
+    const runner = result.find((entry) => entry.path === "runner.ts");
+
+    expect(runner?.callEdges).toContainEqual({
+      caller: "run",
+      callee: "restoreSession",
+      via: "session.ts",
+    });
+    expect(runner?.callEdges).toContainEqual({
+      caller: "run",
+      callee: "fallbackSession",
+      via: "local",
     });
   });
 

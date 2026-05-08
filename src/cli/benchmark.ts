@@ -1,4 +1,8 @@
-import { runBenchmark } from "../benchmark/index.js";
+import {
+  getBenchmarkDashboardPaths,
+  runBenchmark,
+} from "../benchmark/index.js";
+import { resolveBenchmarkReportPath } from "../benchmark/runtime.js";
 import { benchmarkTasks } from "../benchmark/tasks.js";
 import {
   logKeyValue,
@@ -32,6 +36,7 @@ export async function runBenchmarkCommand(options: {
     return;
   }
 
+  const outputPath = resolveBenchmarkReportPath(options.output);
   const report = await runBenchmark({
     taskIds: options.taskIds,
     outputPath: options.output,
@@ -50,6 +55,7 @@ export async function runBenchmarkCommand(options: {
   }
 
   logSection(options.mock ? "Benchmark 摘要（mock 模式）" : "Benchmark 摘要");
+  const dashboardPaths = getBenchmarkDashboardPaths(outputPath);
   if (options.environmentSoftFail) {
     logListItem("环境失败软处理已启用：provider/env 失败会记录但不阻塞门禁");
   }
@@ -72,6 +78,10 @@ export async function runBenchmarkCommand(options: {
 | 趋势 | ${report.summary.trend ? `${report.summary.trend.successRateDelta || 0}` : "无历史基线"} |
 `.trim(),
   );
+  console.log();
+  logKeyValue("Dashboard Markdown", dashboardPaths.markdown);
+  logKeyValue("Dashboard HTML", dashboardPaths.html);
+  logKeyValue("History", dashboardPaths.history);
   console.log();
 
   if (report.summary.byCategory.length > 0) {

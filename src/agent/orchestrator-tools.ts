@@ -149,7 +149,7 @@ export async function executeToolCall(
     const { message, diff } = normalizeToolResult(rawResult);
     resultMsg = message;
     if (diff) diffs.push(diff);
-    if (MODIFYING_TOOLS.has(call.name)) {
+    if (tool.modifiesFiles === true || MODIFYING_TOOLS.has(call.name)) {
       hasModifiedFiles = true;
       hasValidated = false;
       const modifiedPath =

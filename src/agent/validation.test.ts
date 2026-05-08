@@ -1,4 +1,7 @@
 import { promises as fs } from "node:fs";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildFailurePrompt,
@@ -13,6 +16,7 @@ import {
 beforeEach(() => {
   vi.restoreAllMocks();
   delete process.env.npm_config_user_agent;
+  delete process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT;
 });
 
 describe("validation helpers", () => {
@@ -183,7 +187,7 @@ describe("getValidationPlan", () => {
     expect(plan.reason).toContain("跳过自动验证");
   });
 
-  it("修改源码时优先选择 lint/build", async () => {
+  it("修改源码时优先选择 lint/test/build", async () => {
     vi.spyOn(fs, "readFile").mockResolvedValue(
       JSON.stringify({
         scripts: { lint: "eslint .", build: "tsc", test: "vitest run" },
@@ -194,7 +198,11 @@ describe("getValidationPlan", () => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     });
     const plan = await getValidationPlan(["src/index.ts"]);
-    expect(plan.commands).toEqual(["npm run lint", "npm run build"]);
+    expect(plan.commands).toEqual([
+      "npm run lint",
+      "npm run test",
+      "npm run build",
+    ]);
   });
 
   it("会回退到 check 脚本作为 lint 验证", async () => {
@@ -208,7 +216,11 @@ describe("getValidationPlan", () => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     });
     const plan = await getValidationPlan(["src/index.ts"]);
-    expect(plan.commands).toEqual(["npm run check", "npm run build"]);
+    expect(plan.commands).toEqual([
+      "npm run check",
+      "npm run test",
+      "npm run build",
+    ]);
   });
 
   it("修改配置时执行完整验证", async () => {
@@ -300,6 +312,49 @@ describe("getValidationPlan", () => {
     vi.spyOn(fs, "access").mockResolvedValue(undefined);
     const plan = await getValidationPlan(["src/index.ts", "src/index.test.ts"]);
     expect(plan.commands).toEqual(["pnpm run lint", "pnpm run build"]);
+  });
+
+  it("源码改动时根据同名测试布局运行相关测试", async () => {
+    const workspace = await mkdtemp(
+      path.join(os.tmpdir(), "validation-related-tests-"),
+    );
+    process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT = workspace;
+    await fs.mkdir(path.join(workspace, "src/utils"), { recursive: true });
+    await fs.mkdir(path.join(workspace, "src/cli"), { recursive: true });
+    await writeFile(path.join(workspace, "package-lock.json"), "{}", "utf8");
+    await writeFile(
+      path.join(workspace, "src/utils/token.test.ts"),
+      "test('token', () => {})",
+      "utf8",
+    );
+    await writeFile(
+      path.join(workspace, "src/cli/interactive.test.ts"),
+      "test('interactive', () => {})",
+      "utf8",
+    );
+    const originalReadFile = fs.readFile;
+    vi.spyOn(fs, "readFile").mockImplementation(async (target, options) => {
+      if (String(target).endsWith("package.json")) {
+        return JSON.stringify({
+          scripts: {
+            lint: "biome check src/",
+            build: "tsc",
+            test: "vitest run",
+          },
+        });
+      }
+      return originalReadFile(target, options);
+    });
+
+    const plan = await getValidationPlan(["src/utils/token.ts"]);
+
+    expect(plan.commands).toEqual([
+      "npm run lint",
+      "npm run test -- src/utils/token.test.ts",
+      "npm run build",
+    ]);
+    expect(plan.reason).toContain("测试布局推断相关测试");
+    delete process.env.MINI_CLAUDE_CODE_WORKSPACE_ROOT;
   });
 
   it("package.json 不可读时回退默认构建命令", async () => {

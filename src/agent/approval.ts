@@ -1,6 +1,9 @@
+import path from "node:path";
 import { getRunCommandPolicy } from "../tools/command.js";
 import type {
   ApprovalRequest,
+  ApprovalResponse,
+  ApprovalScope,
   CommandConfirmationRequest,
   ExternalPathConfirmationRequest,
   FileImportConfirmationRequest,
@@ -26,10 +29,93 @@ const EXTERNAL_PATH_TOOL_ACTIONS: Partial<
   project_map: "read",
 };
 
+export function getApprovalExactCacheKey(request: ApprovalRequest): string {
+  if (request.kind === "command") return `command:${request.command}`;
+  if (request.kind === "external_file") {
+    return `external_file:${request.mode}:${request.path}`;
+  }
+  return `external_path:${request.action}:${request.path}`;
+}
+
+function getCommandKind(command: string): string {
+  const parts = command.trim().split(/\s+/).filter(Boolean);
+  const executable = parts[0] || "";
+  if (["npm", "pnpm", "yarn", "bun"].includes(executable)) {
+    return `command:${parts.slice(0, 2).join(" ") || executable}`;
+  }
+  if (["npx", "tsx", "node"].includes(executable)) {
+    return `command:${parts.slice(0, 2).join(" ") || executable}`;
+  }
+  return `command:${command.trim()}`;
+}
+
+export function getApprovalKindCacheKey(request: ApprovalRequest): string {
+  if (request.kind === "command") return getCommandKind(request.command);
+  if (request.kind === "external_file") {
+    return `external_file:${request.mode}:${path.dirname(request.path)}`;
+  }
+  return `external_path:${request.action}:${path.dirname(request.path)}`;
+}
+
+function normalizeApprovalResponse(response: ApprovalResponse): {
+  approved: boolean;
+  scope: ApprovalScope;
+} {
+  return typeof response === "boolean"
+    ? { approved: response, scope: "once" }
+    : { approved: response.approved, scope: response.scope || "once" };
+}
+
 export class ApprovalManager {
+  private taskApprovals = new Set<string>();
+  private taskRejections = new Set<string>();
+
   constructor(
-    private onConfirmCommand?: (request: ApprovalRequest) => Promise<boolean>,
+    private onConfirmCommand?: (
+      request: ApprovalRequest,
+    ) => Promise<ApprovalResponse>,
   ) {}
+
+  resetTaskApprovals() {
+    this.taskApprovals.clear();
+    this.taskRejections.clear();
+  }
+
+  getActiveTaskApprovalKeys(): string[] {
+    return Array.from(this.taskApprovals).sort();
+  }
+
+  getActiveTaskRejectionKeys(): string[] {
+    return Array.from(this.taskRejections).sort();
+  }
+
+  clearActiveTaskDecisions() {
+    this.resetTaskApprovals();
+  }
+
+  private async requestApproval(request: ApprovalRequest): Promise<boolean> {
+    const exactKey = getApprovalExactCacheKey(request);
+    const kindKey = getApprovalKindCacheKey(request);
+    if (this.taskRejections.has(exactKey) || this.taskRejections.has(kindKey)) {
+      return false;
+    }
+    if (this.taskApprovals.has(exactKey) || this.taskApprovals.has(kindKey)) {
+      return true;
+    }
+    if (!this.onConfirmCommand) return false;
+    const response = normalizeApprovalResponse(
+      await this.onConfirmCommand(request),
+    );
+    if (response.scope !== "once") {
+      const key = response.scope === "task_kind" ? kindKey : exactKey;
+      if (response.approved) {
+        this.taskApprovals.add(key);
+      } else {
+        this.taskRejections.add(key);
+      }
+    }
+    return response.approved;
+  }
 
   async confirmCommand(
     command: string,
@@ -40,19 +126,7 @@ export class ApprovalManager {
     if (policy.decision !== "confirm") return true;
 
     steps.push(`命令需要确认: ${command} (${policy.reason})`);
-    if (!this.onConfirmCommand) {
-      steps.push(`命令已拒绝: ${command}`);
-      await appendCommandAudit({
-        timestamp: new Date().toISOString(),
-        command,
-        reason: policy.reason,
-        decision: "rejected",
-        source,
-      });
-      return false;
-    }
-
-    const approved = await this.onConfirmCommand({
+    const approved = await this.requestApproval({
       kind: "command",
       command,
       reason: policy.reason,
@@ -67,7 +141,7 @@ export class ApprovalManager {
       source,
     });
     steps.push(
-      approved ? `用户已确认命令: ${command}` : `用户拒绝命令: ${command}`,
+      approved ? `用户已确认命令: ${command}` : `命令已拒绝: ${command}`,
     );
     return approved;
   }
@@ -95,25 +169,7 @@ export class ApprovalManager {
           : `工作区外路径需要确认打开: ${targetPath} (${reason})`,
     );
 
-    if (!this.onConfirmCommand) {
-      steps.push(
-        action === "write"
-          ? `工作区外文件已拒绝修改: ${targetPath}`
-          : action === "search"
-            ? `工作区外目录已拒绝搜索: ${targetPath}`
-            : `工作区外路径已拒绝打开: ${targetPath}`,
-      );
-      await appendCommandAudit({
-        timestamp: new Date().toISOString(),
-        command: auditCommand,
-        reason,
-        decision: "rejected",
-        source: "tool",
-      });
-      return false;
-    }
-
-    const approved = await this.onConfirmCommand({
+    const approved = await this.requestApproval({
       kind: "external_path",
       path: targetPath,
       action,
@@ -153,19 +209,7 @@ export class ApprovalManager {
     const auditCommand = `import_external_file ${sourcePath}${destinationPath ? ` -> ${destinationPath}` : ""}`;
     steps.push(`工作区外文件需要确认打开: ${sourcePath} (${reason})`);
 
-    if (!this.onConfirmCommand) {
-      steps.push(`工作区外文件已拒绝打开: ${sourcePath}`);
-      await appendCommandAudit({
-        timestamp: new Date().toISOString(),
-        command: auditCommand,
-        reason,
-        decision: "rejected",
-        source: "tool",
-      });
-      return false;
-    }
-
-    const approved = await this.onConfirmCommand({
+    const approved = await this.requestApproval({
       kind: "external_file",
       path: sourcePath,
       destinationPath: destinationPath || ".imports/<auto>",

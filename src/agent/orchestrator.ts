@@ -1,5 +1,10 @@
 import { LlmClient } from "../llm/client.js";
-import { getToolMap, tools } from "../tools/index.js";
+import {
+  getToolCapabilitySets,
+  getToolMap,
+  loadTools,
+  tools,
+} from "../tools/index.js";
 import {
   getProjectMemoryContext,
   type ProjectMemoryReviewHandler,
@@ -10,17 +15,19 @@ import type {
   AgentEvent,
   AgentRunResult,
   ApprovalRequest,
+  ApprovalResponse,
   ChatMessage,
   DiffEntry,
 } from "../types/agent.js";
+import { getWorkspaceRoot } from "../utils/runtime.js";
 import { ApprovalManager } from "./approval.js";
 import {
   ANALYSIS_EXECUTION_ROUND_LIMIT,
   EXTERNAL_ANALYSIS_EXECUTION_ROUND_LIMIT,
+  getModifyingTools,
+  getParallelizableTools,
+  getReadOnlyTools,
   MAX_AUTO_FIX_ROUNDS,
-  MODIFYING_TOOLS,
-  PARALLELIZABLE_TOOLS,
-  READ_ONLY_TOOLS,
 } from "./orchestrator-config.js";
 import {
   getExecutionBudget,
@@ -42,6 +49,16 @@ import type {
 } from "./orchestrator-types.js";
 import { runAutoValidation } from "./orchestrator-validation.js";
 import { SYSTEM_PROMPT } from "./prompts.js";
+import {
+  createRunReportId,
+  type RunReportToolCall,
+  writeRunReport,
+} from "./report.js";
+import {
+  buildRelevantSessionContextMessage,
+  findRelevantSessionContext,
+  isRelevantSessionContextMessage,
+} from "./session.js";
 import { setActiveTaskGraph } from "./task-context.js";
 import { AgentTaskGraph } from "./task-graph.js";
 import {
@@ -86,7 +103,11 @@ export function mergeParallelToolResults(
 
 export class AgentOrchestrator {
   private llm = new LlmClient();
+  private activeTools = tools;
   private toolMap = getToolMap();
+  private readOnlyTools = getReadOnlyTools();
+  private modifyingTools = getModifyingTools();
+  private parallelizableTools = getParallelizableTools();
   private state = new OrchestratorState(SYSTEM_PROMPT);
   private onEvent?: (event: AgentEvent) => void;
   private approvalManager: ApprovalManager;
@@ -96,7 +117,7 @@ export class AgentOrchestrator {
 
   constructor(options?: {
     onEvent?: (event: AgentEvent) => void;
-    onConfirmCommand?: (request: ApprovalRequest) => Promise<boolean>;
+    onConfirmCommand?: (request: ApprovalRequest) => Promise<ApprovalResponse>;
     onReviewMemory?: ProjectMemoryReviewHandler;
   }) {
     this.onEvent = options?.onEvent;
@@ -140,6 +161,17 @@ export class AgentOrchestrator {
     return this.taskGraph.list();
   }
 
+  getActiveApprovalDecisions() {
+    return {
+      allowed: this.approvalManager.getActiveTaskApprovalKeys(),
+      rejected: this.approvalManager.getActiveTaskRejectionKeys(),
+    };
+  }
+
+  clearActiveApprovalDecisions() {
+    this.approvalManager.clearActiveTaskDecisions();
+  }
+
   get formattedTasks() {
     return this.taskGraph.format();
   }
@@ -167,6 +199,21 @@ export class AgentOrchestrator {
     this.state.trimContextIfNeeded((event) => this.emit(event));
   }
 
+  private async refreshTools() {
+    this.activeTools = await loadTools();
+    const capabilities = getToolCapabilitySets(this.activeTools);
+    this.toolMap = getToolMap(
+      this.activeTools.filter(
+        (tool) => !tools.some((builtinTool) => builtinTool.name === tool.name),
+      ),
+    );
+    this.readOnlyTools = getReadOnlyTools(capabilities.readOnly);
+    this.modifyingTools = getModifyingTools(capabilities.modifying);
+    this.parallelizableTools = getParallelizableTools(
+      capabilities.parallelizable,
+    );
+  }
+
   private async injectProjectMemoryContext(steps: string[]) {
     const context = await getProjectMemoryContext();
     this.state.messages = this.state.messages.filter(
@@ -176,6 +223,30 @@ export class AgentOrchestrator {
     if (!context) return;
     this.state.messages.splice(1, 0, { role: "assistant", content: context });
     steps.push("已注入项目长期记忆上下文");
+  }
+
+  private async injectRelevantSessionContext(
+    userTask: string,
+    steps: string[],
+    taskIds: number[] = [],
+  ) {
+    this.state.messages = this.state.messages.filter(
+      (message) => !isRelevantSessionContextMessage(message),
+    );
+    const contextMessage = buildRelevantSessionContextMessage(
+      await findRelevantSessionContext({
+        queryText: userTask,
+        focus: this.state.summaryFocus,
+        taskIds,
+      }),
+    );
+    if (!contextMessage) return;
+    const insertAt = this.state.messages.findIndex(
+      (message, index) =>
+        index > 0 && !message.content?.startsWith("项目长期记忆："),
+    );
+    this.state.messages.splice(insertAt > 0 ? insertAt : 1, 0, contextMessage);
+    steps.push("已注入相关历史上下文");
   }
 
   private async rememberRunOutcome(input: {
@@ -192,6 +263,7 @@ export class AgentOrchestrator {
         steps: input.steps,
         modifiedPaths: Array.from(input.modifiedPaths),
         validationCommands,
+        summaryLines: this.state.summaryLines,
       };
       const memory = this.memoryReviewHandler
         ? await rememberProjectMemoryFromRunWithReview(
@@ -209,7 +281,17 @@ export class AgentOrchestrator {
     }
   }
 
-  async undoLastRun(): Promise<AgentRunResult> {
+  getLastRunModifiedPaths(): string[] {
+    return (
+      this.undoStack[this.undoStack.length - 1]?.map(
+        (snapshot) => snapshot.path,
+      ) || []
+    );
+  }
+
+  async undoLastRun(
+    options: { paths?: string[] } = {},
+  ): Promise<AgentRunResult> {
     const snapshots = this.undoStack.pop();
     if (!snapshots || snapshots.length === 0) {
       return {
@@ -220,8 +302,14 @@ export class AgentOrchestrator {
       };
     }
 
-    const diffs = await restoreUndoSnapshots(snapshots);
-    const restoredPaths = snapshots.map((snapshot) => snapshot.path);
+    const diffs = await restoreUndoSnapshots(snapshots, options);
+    const restoredPaths = diffs.map((diff) => diff.path);
+    const skippedSnapshots = options.paths?.length
+      ? snapshots.filter((snapshot) => !restoredPaths.includes(snapshot.path))
+      : [];
+    if (skippedSnapshots.length > 0) {
+      this.rememberUndoSnapshots(skippedSnapshots);
+    }
     return {
       finalText: `已撤销上一轮修改: ${restoredPaths.join(", ")}`,
       steps: ["已根据上一轮修改前快照恢复文件"],
@@ -231,6 +319,7 @@ export class AgentOrchestrator {
   }
 
   async plan(userTask: string): Promise<AgentRunResult> {
+    await this.refreshTools();
     const planMessage: ChatMessage = {
       role: "user",
       content: [
@@ -245,10 +334,12 @@ export class AgentOrchestrator {
     setActiveTaskGraph(this.taskGraph);
     const steps: string[] = ["进入计划模式：仅允许只读探索，不执行文件修改"];
     await this.injectProjectMemoryContext(steps);
+    await this.injectRelevantSessionContext(userTask, steps);
     const diffs: DiffEntry[] = [];
-    const readOnlyTools = tools.filter(
+    const readOnlyTools = this.activeTools.filter(
       (tool) =>
-        READ_ONLY_TOOLS.has(tool.name) && tool.name !== "import_external_file",
+        this.readOnlyTools.has(tool.name) &&
+        tool.name !== "import_external_file",
     );
     const readOnlyToolMap = new Map(
       readOnlyTools.map((tool) => [tool.name, tool]),
@@ -332,6 +423,8 @@ export class AgentOrchestrator {
   }
 
   async run(userTask: string): Promise<AgentRunResult> {
+    await this.refreshTools();
+    this.approvalManager.resetTaskApprovals();
     return this.runTask(userTask);
   }
 
@@ -394,16 +487,54 @@ export class AgentOrchestrator {
       };
     }
     const retryPrefix = automaticRetry ? "自动重试" : "继续执行";
+    this.approvalManager.resetTaskApprovals();
     return this.runTask(
       `${retryPrefix}任务 ${task.id}: ${task.title}`,
       task.id,
     );
   }
 
+  private async writeRunReportForTask(options: {
+    id?: string;
+    task: string;
+    startedAt: string;
+    status: "completed" | "blocked" | "failed";
+    finalText: string;
+    steps: string[];
+    diffs: DiffEntry[];
+    toolCalls: RunReportToolCall[];
+    validationCommands: string[];
+    autoFixRounds: number;
+  }) {
+    const finishedAt = new Date().toISOString();
+    await writeRunReport({
+      id: options.id || createRunReportId(),
+      task: options.task,
+      startedAt: options.startedAt,
+      finishedAt,
+      durationMs: Date.parse(finishedAt) - Date.parse(options.startedAt),
+      status: options.status,
+      workspace: getWorkspaceRoot(),
+      toolCalls: options.toolCalls,
+      approvals: this.getActiveApprovalDecisions(),
+      modifiedFiles: Array.from(
+        new Set(options.diffs.map((diff) => diff.path).filter(Boolean)),
+      ).sort(),
+      validationCommands: Array.from(new Set(options.validationCommands)),
+      autoFixRounds: options.autoFixRounds,
+      finalText: options.finalText,
+      steps: options.steps,
+      diffs: options.diffs,
+    });
+  }
+
   private async runTask(
     userTask: string,
     resumeTaskId?: number,
   ): Promise<AgentRunResult> {
+    const startedAt = new Date().toISOString();
+    const reportToolCalls: RunReportToolCall[] = [];
+    const validationCommands: string[] = [];
     const previousFailureCount =
       resumeTaskId !== undefined
         ? this.taskGraph.get(resumeTaskId)?.failureCount || 0
@@ -419,6 +550,11 @@ export class AgentOrchestrator {
     setActiveTaskGraph(this.taskGraph);
     const steps: string[] = [];
     await this.injectProjectMemoryContext(steps);
+    await this.injectRelevantSessionContext(
+      userTask,
+      steps,
+      resumeTaskId !== undefined ? [resumeTaskId] : [],
+    );
     const diffs: DiffEntry[] = [];
     const executionMode = getExecutionMode(userTask);
     const modeHint: ChatMessage = {
@@ -470,7 +606,7 @@ export class AgentOrchestrator {
       this.emit({ type: "thinking" });
       const response = await this.llm.chatStream(
         this.state.messages,
-        tools,
+        this.activeTools,
         (event) => {
           if (event.type === "text_delta") {
             this.emit({ type: "text_delta", text: event.text });
@@ -484,7 +620,7 @@ export class AgentOrchestrator {
       const toolNames = response.toolCalls.map((call) => call.name);
       const isReadOnlyExplorationTurn =
         toolNames.length > 0 &&
-        toolNames.every((name) => READ_ONLY_TOOLS.has(name));
+        toolNames.every((name) => this.readOnlyTools.has(name));
       if (
         isReadOnlyExplorationTurn &&
         !hasModifiedFiles &&
@@ -520,7 +656,12 @@ export class AgentOrchestrator {
               messages: this.state.messages,
               rememberMessageFocus: (message) =>
                 this.rememberMessageFocus(message),
-              emit: (event) => this.emit(event),
+              emit: (event) => {
+                if (event.type === "auto_validate") {
+                  validationCommands.push(event.command);
+                }
+                this.emit(event);
+              },
             },
             i,
             steps,
@@ -567,6 +708,17 @@ export class AgentOrchestrator {
               "自动验证失败且达到最大自动修复轮数",
             );
             await persistSession(this.state, { tasks: this.taskGraph.list() });
+            await this.writeRunReportForTask({
+              task: userTask,
+              startedAt,
+              status: "failed",
+              finalText,
+              steps,
+              diffs,
+              toolCalls: reportToolCalls,
+              validationCommands,
+              autoFixRounds,
+            });
             return {
               finalText,
               steps,
@@ -592,6 +744,17 @@ export class AgentOrchestrator {
         });
         this.taskGraph.completeActive(resumeTaskId);
         await persistSession(this.state, { tasks: this.taskGraph.list() });
+        await this.writeRunReportForTask({
+          task: userTask,
+          startedAt,
+          status: "completed",
+          finalText,
+          steps,
+          diffs,
+          toolCalls: reportToolCalls,
+          validationCommands,
+          autoFixRounds,
+        });
         return {
           finalText,
           steps,
@@ -614,10 +777,10 @@ export class AgentOrchestrator {
 
       const canParallelize =
         response.toolCalls.length > 1 &&
-        response.toolCalls.every((tc) => PARALLELIZABLE_TOOLS.has(tc.name));
+        response.toolCalls.every((tc) => this.parallelizableTools.has(tc.name));
 
       const pathsToSnapshot = response.toolCalls
-        .filter((call) => MODIFYING_TOOLS.has(call.name))
+        .filter((call) => this.modifyingTools.has(call.name))
         .flatMap((call) => {
           try {
             const args = JSON.parse(call.argumentsText || "{}");
@@ -662,6 +825,11 @@ export class AgentOrchestrator {
             result.status === "fulfilled"
               ? result.value.message
               : `工具执行失败: ${(result as PromiseRejectedResult).reason}`;
+          reportToolCalls.push({
+            name: call.name,
+            args: call.argumentsText,
+            result: resultMsg.slice(0, 200),
+          });
           const toolMessage: ChatMessage = {
             role: "tool",
             tool_call_id: call.id,
@@ -701,6 +869,11 @@ export class AgentOrchestrator {
             modifiedPaths,
             { hasModifiedFiles, hasValidated, autoFixRounds },
           );
+          reportToolCalls.push({
+            name: call.name,
+            args: call.argumentsText,
+            result: result.message.slice(0, 200),
+          });
           const toolMessage: ChatMessage = {
             role: "tool",
             tool_call_id: call.id,
@@ -737,6 +910,17 @@ export class AgentOrchestrator {
     });
     this.taskGraph.blockActive(resumeTaskId, "达到当前任务最大执行轮数");
     await persistSession(this.state, { tasks: this.taskGraph.list() });
+    await this.writeRunReportForTask({
+      task: userTask,
+      startedAt,
+      status: "blocked",
+      finalText,
+      steps,
+      diffs,
+      toolCalls: reportToolCalls,
+      validationCommands,
+      autoFixRounds,
+    });
     return {
       finalText,
       steps,

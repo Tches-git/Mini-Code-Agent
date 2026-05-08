@@ -2,19 +2,27 @@ import { stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
 import chalk from "chalk";
 import { execa } from "execa";
+import {
+  getApprovalExactCacheKey,
+  getApprovalKindCacheKey,
+} from "../agent/approval.js";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
 import { getRuntimeEnvInfo, loadWorkspaceEnv } from "../llm/env.js";
 import {
   editProjectMemory,
+  editProjectMemoryCandidateText,
   type ProjectMemoryReview,
   type ProjectMemoryReviewDecision,
   readProjectMemory,
   reviewProjectMemoryEdit,
+  selectProjectMemoryCandidates,
 } from "../tools/memory.js";
 import type {
   AgentEvent,
+  AgentRunResult,
   AgentTaskItem,
   ApprovalRequest,
+  ApprovalResponse,
 } from "../types/agent.js";
 import {
   logAssistant,
@@ -50,6 +58,7 @@ import {
   setWorkspaceRoot,
 } from "../utils/runtime.js";
 import { parseApprovalLogQueryText, printApprovalLog } from "./approval-log.js";
+import { printRunReports } from "./reports.js";
 import { printSessions } from "./sessions.js";
 
 const SLASH_COMMANDS = {
@@ -64,11 +73,14 @@ const SLASH_COMMANDS = {
     "查看当前工作区 Git diff，可限定路径或 staged diff",
   "/status": "查看当前工作区、会话、撤销和 Git 状态",
   "/config": "查看模型、环境、验证和命令策略配置",
+  "/review": "交互审查最近一次 Agent 修改，可按文件接受/回滚",
   "/undo": "撤销 Agent 最近一次文件修改",
   "/tasks [timeline]": "查看上一轮任务步骤，timeline 显示任务状态时间线",
   "/memory [review|clear|remove <id>|overview <text>]":
     "查看、预览、确认/拒绝或编辑项目长期记忆",
-  "/approvals": "查看审批记录，可用 decision:/action:/path:/after: 等过滤",
+  "/approvals [active|clear]":
+    "查看审批记录，或查看/清空当前任务临时审批；可用 decision:/action:/path:/after: 等过滤",
+  "/reports [id]": "查看 Agent 运行报告列表或详情",
   "/sessions": "查看可恢复的历史会话",
   "/resume <id>": "恢复指定会话 ID 的上下文",
   "/init": "提示使用 init 子命令生成 .env 模板",
@@ -109,7 +121,7 @@ export function completeSlashCommand(line: string): [string[], string] {
 function printSlashSuggestions(inputText = "/") {
   const suggestions = getSlashCommandSuggestions(inputText);
   logCardList(
-    inputText === "/" ? "常用 slash 命令" : "匹配的 slash 命令",
+    inputText.trim() === "/" ? "所有 slash 命令" : "匹配的 slash 命令",
     suggestions.length > 0
       ? suggestions
       : ["没有匹配的 slash 命令，输入 /help 查看全部。"],
@@ -265,26 +277,97 @@ export async function printInteractiveStatus(options: {
   console.log();
 }
 
+function parseMemorySelection(inputText: string, max: number): number[] {
+  const trimmed = inputText.trim().toLowerCase();
+  if (!trimmed || trimmed === "a" || trimmed === "all") {
+    return Array.from({ length: max }, (_, index) => index + 1);
+  }
+  if (trimmed === "n" || trimmed === "none") return [];
+  return Array.from(
+    new Set(
+      trimmed
+        .split(/[,\s]+/)
+        .map((item) => Number.parseInt(item, 10))
+        .filter((item) => Number.isInteger(item) && item >= 1 && item <= max),
+    ),
+  );
+}
+
 async function reviewProjectMemoryInteractively(
   rl: readline.Interface,
   review: ProjectMemoryReview,
 ): Promise<ProjectMemoryReviewDecision> {
   logCard("项目长期记忆自动候选");
-  const candidateLines = [
-    ...(review.candidates?.preferences || []).map((item) => `偏好: ${item}`),
-    ...(review.candidates?.commands || []).map((item) => `命令: ${item}`),
-    ...(review.candidates?.facts || []).map((item) => `事实: ${item.text}`),
-  ];
-  if (candidateLines.length > 0) {
-    logCardList("候选条目", candidateLines);
+  const reviewItems = review.items || [];
+  if (reviewItems.length > 0) {
+    logCardList(
+      "候选条目",
+      reviewItems.map((item, index) => {
+        const details = [
+          item.confidence ? `置信度: ${item.confidence}` : "",
+          item.expiresAt ? `过期: ${item.expiresAt}` : "",
+          item.conflict || "",
+        ].filter(Boolean);
+        return `**${index + 1}.** ${item.label}${details.length ? ` — ${details.join("; ")}` : ""}`;
+      }),
+    );
+  } else {
+    const candidateLines = [
+      ...(review.candidates?.preferences || []).map((item) => `偏好: ${item}`),
+      ...(review.candidates?.commands || []).map((item) => `命令: ${item}`),
+      ...(review.candidates?.facts || []).map((item) => `事实: ${item.text}`),
+    ];
+    if (candidateLines.length > 0) {
+      logCardList("候选条目", candidateLines);
+    }
   }
   logDetailEntries([{ label: "Diff", value: review.diff }]);
-  const answer = await rl.question(chalk.cyan.bold("  保存这次记忆？[y/N/e] "));
+  const answer = await rl.question(
+    chalk.cyan.bold("  保存这次记忆？[y/N/e/s] "),
+  );
   const normalized = answer.trim().toLowerCase();
   if (normalized === "y" || normalized === "yes") return "accept";
   if (normalized === "e" || normalized === "edit") {
     const overview = await rl.question(chalk.cyan.bold("  编辑项目画像: "));
     return { update: { overview } };
+  }
+  if (
+    (normalized === "s" || normalized === "select") &&
+    review.candidates &&
+    reviewItems.length > 0
+  ) {
+    let candidates = review.candidates;
+    const selectedText = await rl.question(
+      chalk.cyan.bold("  选择要保存的条目编号（逗号分隔，all/none）: "),
+    );
+    const selectedIndexes = parseMemorySelection(
+      selectedText,
+      reviewItems.length,
+    );
+    if (selectedIndexes.length === 0) return "reject";
+    const editText = await rl.question(
+      chalk.cyan.bold("  可选：输入 <编号>:<新文本> 逐条编辑，留空跳过: "),
+    );
+    const editMatch = /^(\d+)\s*[:：]\s*(.+)$/.exec(editText.trim());
+    if (editMatch) {
+      const editIndex = Number.parseInt(editMatch[1], 10);
+      const item = reviewItems[editIndex - 1];
+      if (item && selectedIndexes.includes(editIndex)) {
+        candidates = editProjectMemoryCandidateText(
+          candidates,
+          item.key,
+          editMatch[2],
+        );
+      }
+    }
+    return {
+      update: selectProjectMemoryCandidates(
+        candidates,
+        selectedIndexes
+          .map((index) => reviewItems[index - 1]?.key)
+          .filter(Boolean),
+      ),
+    };
   }
   return "reject";
 }
@@ -426,6 +509,65 @@ export function parseDiffCommandArgs(input: string): {
   return { staged, path: pathArg };
 }
 
+function parseReviewSelection(input: string, paths: string[]): string[] {
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed || trimmed === "a" || trimmed === "all") return [...paths];
+  if (trimmed === "n" || trimmed === "none") return [];
+  const selected = new Set<string>();
+  for (const item of trimmed.split(/[\s,]+/).filter(Boolean)) {
+    const index = Number.parseInt(item, 10);
+    if (Number.isInteger(index) && paths[index - 1]) {
+      selected.add(paths[index - 1]);
+      continue;
+    }
+    const matched = paths.find((filePath) => filePath.toLowerCase() === item);
+    if (matched) selected.add(matched);
+  }
+  return Array.from(selected);
+}
+
+async function reviewLastRunInteractively(
+  rl: readline.Interface,
+  agent: AgentOrchestrator,
+): Promise<AgentRunResult | null> {
+  const paths = agent.getLastRunModifiedPaths();
+  if (paths.length === 0) {
+    logEmptyState("没有可审查的上一轮 Agent 修改。");
+    console.log();
+    return null;
+  }
+  logCardList(
+    "上一轮修改文件",
+    paths.map((filePath, index) => `**${index + 1}.** ${filePath}`),
+  );
+  await printWorkspaceDiff();
+  const answer = await rl.question(
+    chalk.cyan.bold(
+      "  接受哪些文件？输入编号/路径，all=全部接受，none=全部回滚: ",
+    ),
+  );
+  const accepted = parseReviewSelection(answer, paths);
+  const rejected = paths.filter((filePath) => !accepted.includes(filePath));
+  if (rejected.length === 0) {
+    logSuccess("已接受上一轮全部修改。");
+    console.log();
+    return null;
+  }
+  const result = await agent.undoLastRun({ paths: rejected });
+  logCard("审查回滚完成");
+  logCardList("已接受", accepted.length ? accepted : ["无"]);
+  logCardList("已回滚", rejected);
+  if (result.diffs.length > 0) {
+    logSection("回滚预览");
+    for (const d of result.diffs) {
+      logDiffHeader(d.path, d.summary);
+      for (const l of d.diff.split("\n")) logDiffLine(l);
+    }
+  }
+  console.log();
+  return result;
+}
+
 export async function printWorkspaceDiff(
   options: { staged?: boolean; path?: string } = {},
 ) {
@@ -502,6 +644,12 @@ function handleEvent(event: AgentEvent, spinner: Spinner) {
   }
 }
 
+function isHighRiskCommand(command: string): boolean {
+  return /(^|\s)(rm|mv|chmod|chown|dd|sudo)\b|git\s+(reset|clean|push\s+--force|push\s+-f)\b|>\s*\S+/.test(
+    command,
+  );
+}
+
 export function describeApprovalRequest(request: ApprovalRequest): {
   title: string;
   primary: string;
@@ -518,7 +666,7 @@ export function describeApprovalRequest(request: ApprovalRequest): {
       detailLines: [{ label: "原因", value: request.reason }],
       promptLabel: "允许执行?",
       resultLabel: "执行",
-      riskLevel: "高",
+      riskLevel: isHighRiskCommand(request.command) ? "高" : "中",
       defaultPolicy: "默认拒绝，除非明确批准。",
     };
   }
@@ -600,6 +748,23 @@ export function describeApprovalRequest(request: ApprovalRequest): {
   };
 }
 
+function getApprovalPromptOptions(
+  request: ApprovalRequest,
+  riskLevel: "低" | "中" | "高",
+): { prompt: string; exactKey: string; kindKey: string; allowKind: boolean } {
+  const exactKey = getApprovalExactCacheKey(request);
+  const kindKey = getApprovalKindCacheKey(request);
+  const allowKind = riskLevel !== "高";
+  return {
+    exactKey,
+    kindKey,
+    allowKind,
+    prompt: allowKind
+      ? "[y]本次 / [e]本任务精确同项 / [a]本任务同类 / [d]本任务同类拒绝 / [N]拒绝"
+      : "[y]本次 / [e]本任务精确同项 / [d]本任务精确拒绝 / [N]拒绝",
+  };
+}
+
 export async function startInteractive(options?: {
   autoApprove?: boolean;
   resume?: boolean;
@@ -616,7 +781,9 @@ export async function startInteractive(options?: {
     completer: completeSlashCommand,
   });
   const spinner = new Spinner();
-  const confirmAction = async (request: ApprovalRequest): Promise<boolean> => {
+  const confirmAction = async (
+    request: ApprovalRequest,
+  ): Promise<ApprovalResponse> => {
     spinner.stop();
     const description = describeApprovalRequest(request);
     if (options?.autoApprove) {
@@ -631,28 +798,54 @@ export async function startInteractive(options?: {
         "    ",
       );
       console.log();
-      return true;
+      return { approved: true, scope: "task_kind" };
     }
 
+    const promptOptions = getApprovalPromptOptions(
+      request,
+      description.riskLevel,
+    );
     logCard(description.title);
     logCardList("目标", [description.primary]);
     logDetailEntries(
       [
         { label: "风险级别", value: description.riskLevel },
         { label: "默认策略", value: description.defaultPolicy },
+        { label: "精确缓存", value: promptOptions.exactKey },
+        ...(promptOptions.allowKind
+          ? [{ label: "同类缓存", value: promptOptions.kindKey }]
+          : [{ label: "同类缓存", value: "高风险操作仅允许精确缓存" }]),
         ...description.detailLines,
       ],
       "    ",
     );
     const answer = await rl.question(
-      chalk.cyan.bold(`  ${description.promptLabel} [y/N] `),
+      chalk.cyan.bold(`  ${description.promptLabel} ${promptOptions.prompt} `),
     );
-    const approved = /^(y|yes)$/i.test(answer.trim());
+    const normalizedAnswer = answer.trim().toLowerCase();
+    const approved = /^(y|yes|e|exact|a|all)$/.test(normalizedAnswer);
+    const rejectedForTask = /^(d|deny)$/.test(normalizedAnswer);
+    const scope =
+      /^(a|all)$/.test(normalizedAnswer) && promptOptions.allowKind
+        ? "task_kind"
+        : /^(e|exact)$/.test(normalizedAnswer) || rejectedForTask
+          ? "task_exact"
+          : "once";
     approved
-      ? logSuccess(`已确认${description.resultLabel}`)
-      : logError(`已拒绝${description.resultLabel}`);
+      ? logSuccess(
+          scope === "task_kind"
+            ? `已确认${description.resultLabel}，本任务同类操作不再询问`
+            : scope === "task_exact"
+              ? `已确认${description.resultLabel}，本任务精确同项不再询问`
+              : `已确认${description.resultLabel}`,
+        )
+      : logError(
+          rejectedForTask
+            ? `已拒绝${description.resultLabel}，本任务同项不再询问`
+            : `已拒绝${description.resultLabel}`,
+        );
     console.log();
-    return approved;
+    return { approved, scope };
   };
 
   const agent = new AgentOrchestrator({
@@ -873,6 +1066,20 @@ export async function startInteractive(options?: {
       });
       continue;
     }
+    if (slashCommand === "/review") {
+      try {
+        const result = await reviewLastRunInteractively(rl, agent);
+        if (result) {
+          lastTaskSteps = result.steps;
+          lastTaskItems = result.tasks || [];
+          logAssistant(result.finalText);
+        }
+      } catch (error) {
+        logError(error instanceof Error ? error.message : String(error));
+        console.log();
+      }
+      continue;
+    }
     if (slashCommand === "/memory") {
       try {
         await printProjectMemory(trimmed.replace(/^\/memory\b/, ""));
@@ -884,7 +1091,12 @@ export async function startInteractive(options?: {
     }
     if (slashCommand === "/undo") {
       try {
-        const result = await agent.undoLastRun();
+        const pathArgs = trimmed.replace(/^\/undo\b/, "").trim();
+        const result = await agent.undoLastRun({
+          paths: pathArgs
+            ? pathArgs.split(/[\s,]+/).filter(Boolean)
+            : undefined,
+        });
         lastTaskSteps = result.steps;
         lastTaskItems = result.tasks || [];
         logCard("撤销完成");
@@ -918,6 +1130,26 @@ export async function startInteractive(options?: {
     }
     if (slashCommand === "/approvals") {
       const query = trimmed.replace(/^\/approvals\b/, "").trim();
+      if (query === "active") {
+        const decisions = agent.getActiveApprovalDecisions();
+        logCard("当前任务临时审批");
+        logCardList(
+          "允许",
+          decisions.allowed.length ? decisions.allowed : ["无"],
+        );
+        logCardList(
+          "拒绝",
+          decisions.rejected.length ? decisions.rejected : ["无"],
+        );
+        console.log();
+        continue;
+      }
+      if (query === "clear") {
+        agent.clearActiveApprovalDecisions();
+        logSuccess("当前任务临时审批已清空");
+        console.log();
+        continue;
+      }
       const parsed = parseApprovalLogQueryText(query);
       await printApprovalLog(
         {
@@ -926,6 +1158,16 @@ export async function startInteractive(options?: {
         },
         parsed.options,
       );
+      continue;
+    }
+    if (slashCommand === "/reports") {
+      const id = trimmed.replace(/^\/reports\b/, "").trim();
+      try {
+        await printRunReports({ id: id || undefined });
+      } catch (error) {
+        logError(error instanceof Error ? error.message : String(error));
+        console.log();
+      }
       continue;
     }
     if (slashCommand === "/sessions") {

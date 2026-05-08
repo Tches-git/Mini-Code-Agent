@@ -1,6 +1,13 @@
 import type { AgentTaskItem } from "../types/agent.js";
 import type { OrchestratorState } from "./orchestrator-state.js";
-import { clearSession, loadSession, saveSession } from "./session.js";
+import {
+  buildRelevantSessionContextMessage,
+  clearSession,
+  findRelevantSessionContext,
+  isRelevantSessionContextMessage,
+  loadSession,
+  saveSession,
+} from "./session.js";
 
 export async function clearPersistedSession() {
   await clearSession();
@@ -13,6 +20,22 @@ export async function restorePersistedSessionById(
   const data = await loadSession(id);
   if (!data || data.messages.length === 0) return false;
   state.restore(data);
+  state.messages = state.messages.filter(
+    (message) => !isRelevantSessionContextMessage(message),
+  );
+  const contextMessage = buildRelevantSessionContextMessage(
+    await findRelevantSessionContext({
+      sessionId: data.id,
+      focus: state.summaryFocus,
+      taskIds: data.tasks?.map((task) => task.id),
+    }),
+  );
+  if (contextMessage) {
+    const insertAt = state.messages.findIndex(
+      (message, index) => index > 0 && message.role !== "assistant",
+    );
+    state.messages.splice(insertAt > 0 ? insertAt : 1, 0, contextMessage);
+  }
   return true;
 }
 

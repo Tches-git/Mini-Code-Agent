@@ -13,6 +13,7 @@ vi.mock("../llm/client.js", () => ({
 }));
 
 import {
+  getBenchmarkDashboardPaths,
   getEffectiveDiffCount,
   normalizeModifiedPath,
   runBenchmark,
@@ -140,14 +141,18 @@ describe("runBenchmark report summary", () => {
           mock: true,
           isolation: { mode: "temp_copy", cleanup: true },
         });
-        const history = JSON.parse(
-          await readFile(path.join(tempDir, "report.history.json"), "utf8"),
-        );
+        const paths = getBenchmarkDashboardPaths(outputPath);
+        const history = JSON.parse(await readFile(paths.history, "utf8"));
+        const markdown = await readFile(paths.markdown, "utf8");
+        const html = await readFile(paths.html, "utf8");
 
         expect(first.summary.trend).toBeUndefined();
         expect(second.summary.trend?.historyCount).toBe(1);
         expect(history).toHaveLength(2);
         expect(history[1]).toMatchObject({ successRate: 1, passed: 1 });
+        expect(markdown).toContain("Benchmark Dashboard");
+        expect(markdown).toContain("Trend History");
+        expect(html).toContain("<title>Benchmark Dashboard</title>");
       } finally {
         await rm(tempDir, { recursive: true, force: true });
       }

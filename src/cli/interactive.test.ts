@@ -62,16 +62,26 @@ vi.mock("../llm/env.js", () => ({
   getRuntimeEnvInfo: mockGetRuntimeEnvInfo,
 }));
 
+let capturedConfirmCommand:
+  | ((request: import("../types/agent.js").ApprovalRequest) => Promise<unknown>)
+  | null = null;
 let capturedReviewMemory:
   | ((review: { diff: string }) => Promise<unknown>)
   | null = null;
 const mockReviewProjectMemoryEdit = vi.hoisted(() => vi.fn());
 
-vi.mock("../tools/memory.js", () => ({
-  readProjectMemory: mockReadProjectMemory,
-  editProjectMemory: mockEditProjectMemory,
-  reviewProjectMemoryEdit: mockReviewProjectMemoryEdit,
-}));
+vi.mock("../tools/memory.js", async () => {
+  const actual =
+    await vi.importActual<typeof import("../tools/memory.js")>(
+      "../tools/memory.js",
+    );
+  return {
+    ...actual,
+    readProjectMemory: mockReadProjectMemory,
+    editProjectMemory: mockEditProjectMemory,
+    reviewProjectMemoryEdit: mockReviewProjectMemoryEdit,
+  };
+});
 
 vi.mock("../utils/project-tooling.js", async () => {
   const actual = await vi.importActual<
@@ -89,7 +99,11 @@ vi.mock("../agent/orchestrator.js", () => ({
     turnCount = 3;
     canUndoLastRun = false;
     undoStackDepth = 0;
-    constructor(options?: { onReviewMemory?: typeof capturedReviewMemory }) {
+    constructor(options?: {
+      onConfirmCommand?: typeof capturedConfirmCommand;
+      onReviewMemory?: typeof capturedReviewMemory;
+    }) {
+      capturedConfirmCommand = options?.onConfirmCommand || null;
       capturedReviewMemory = options?.onReviewMemory || null;
     }
     restoreSession = mockRestoreSession;
@@ -226,9 +240,31 @@ describe("startInteractive", () => {
     mockGetAppDataDir
       .mockReset()
       .mockReturnValue("/tmp/home/.mini-claude-code");
+    capturedConfirmCommand = null;
     capturedReviewMemory = null;
     vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
     vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  it("approval prompt can allow one action or same kind for current task", async () => {
+    mockQuestion
+      .mockRejectedValueOnce(new Error("stop"))
+      .mockResolvedValueOnce("a");
+
+    await startInteractive({ cwd: "/tmp/demo" });
+
+    const response = await capturedConfirmCommand?.({
+      kind: "command",
+      command: "cat package.json",
+      reason: "测试命令需要确认",
+      policy: "guarded",
+      source: "tool",
+    });
+
+    expect(response).toEqual({ approved: true, scope: "task_kind" });
+    expect(mockLogSuccess).toHaveBeenCalledWith(
+      expect.stringContaining("本任务同类操作不再询问"),
+    );
   });
 
   it("collectMultilineInput reads fenced multiline input", async () => {
@@ -267,8 +303,19 @@ describe("startInteractive", () => {
     await startInteractive();
 
     expect(mockLogCardList).toHaveBeenCalledWith(
-      "常用 slash 命令",
-      expect.arrayContaining([expect.stringContaining("/help")]),
+      "所有 slash 命令",
+      expect.arrayContaining([
+        expect.stringContaining("/exit"),
+        expect.stringContaining("/help"),
+        expect.stringContaining("/plan"),
+        expect.stringContaining("/execute"),
+        expect.stringContaining("/diff"),
+        expect.stringContaining("/status"),
+        expect.stringContaining("/memory"),
+        expect.stringContaining("/reports"),
+        expect.stringContaining("/sessions"),
+        expect.stringContaining("/doctor"),
+      ]),
     );
   });
 
@@ -640,6 +687,47 @@ describe("startInteractive", () => {
     await expect(
       capturedReviewMemory?.({ diff: "memory diff" }),
     ).resolves.toEqual({ update: { overview: "edited" } });
+
+    mockQuestion
+      .mockResolvedValueOnce("s")
+      .mockResolvedValueOnce("2")
+      .mockResolvedValueOnce("2:npm run test:focused");
+    await expect(
+      capturedReviewMemory?.({
+        diff: "memory diff",
+        candidates: {
+          commands: ["npm test"],
+          facts: [
+            {
+              text: "常用验证命令: npm test",
+              source: "auto",
+              confidence: 0.6,
+              updatedAt: "2026-05-06T00:00:00.000Z",
+            },
+          ],
+        },
+        items: [
+          {
+            key: "command:npm test",
+            kind: "command",
+            text: "npm test",
+            label: "命令: npm test",
+          },
+          {
+            key: "fact:npm-test",
+            kind: "fact",
+            text: "常用验证命令: npm test",
+            label: "事实: 常用验证命令: npm test",
+          },
+        ],
+      }),
+    ).resolves.toEqual({
+      update: {
+        preferences: [],
+        commands: [],
+        facts: [expect.objectContaining({ text: "npm run test:focused" })],
+      },
+    });
   });
 
   it("/memory command opens project memory view", async () => {
@@ -845,7 +933,7 @@ describe("startInteractive", () => {
       reason: "需要安装依赖",
     } as never);
 
-    expect(description.riskLevel).toBe("高");
+    expect(description.riskLevel).toBe("中");
     expect(description.defaultPolicy).toContain("默认拒绝");
     expect(description.detailLines).toEqual(
       expect.arrayContaining([

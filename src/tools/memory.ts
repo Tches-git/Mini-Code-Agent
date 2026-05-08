@@ -17,10 +17,21 @@ export type ProjectMemoryFact = {
   expiresAt?: string;
 };
 
+export type ProjectMemoryReviewItem = {
+  key: string;
+  kind: "preference" | "command" | "fact";
+  text: string;
+  label: string;
+  confidence?: number;
+  expiresAt?: string;
+  conflict?: string;
+};
+
 export type ProjectMemoryReview = {
   proposed: ProjectMemory;
   diff: string;
   candidates?: Partial<ProjectMemory>;
+  items?: ProjectMemoryReviewItem[];
 };
 
 export type ProjectMemoryReviewDecision =
@@ -186,6 +197,83 @@ function serializeProjectMemory(memory: ProjectMemory): string {
   return JSON.stringify(normalizeProjectMemory(memory), null, 2);
 }
 
+function createMemoryReviewItems(
+  current: ProjectMemory,
+  candidates: Partial<ProjectMemory>,
+): ProjectMemoryReviewItem[] {
+  const existingText = new Map<string, ProjectMemoryFact>();
+  for (const fact of current.facts || []) {
+    existingText.set(getFactId(fact.text), fact);
+  }
+  return [
+    ...(candidates.preferences || []).map<ProjectMemoryReviewItem>((text) => ({
+      key: `preference:${text}`,
+      kind: "preference",
+      text,
+      label: `偏好: ${text}`,
+    })),
+    ...(candidates.commands || []).map<ProjectMemoryReviewItem>((text) => ({
+      key: `command:${text}`,
+      kind: "command",
+      text,
+      label: `命令: ${text}`,
+    })),
+    ...(candidates.facts || []).map<ProjectMemoryReviewItem>((fact) => {
+      const conflict = existingText.get(getFactId(fact.text));
+      return {
+        key: `fact:${fact.id || getFactId(fact.text)}`,
+        kind: "fact",
+        text: fact.text,
+        label: `事实: ${fact.text}`,
+        confidence: fact.confidence,
+        expiresAt: fact.expiresAt,
+        ...(conflict ? { conflict: `可能更新已有事实: ${conflict.text}` } : {}),
+      };
+    }),
+  ];
+}
+
+export function selectProjectMemoryCandidates(
+  candidates: Partial<ProjectMemory> = {},
+  selectedKeys: string[],
+): Partial<ProjectMemory> {
+  const selected = new Set(selectedKeys);
+  return {
+    preferences: (candidates.preferences || []).filter((text) =>
+      selected.has(`preference:${text}`),
+    ),
+    commands: (candidates.commands || []).filter((text) =>
+      selected.has(`command:${text}`),
+    ),
+    facts: (candidates.facts || []).filter((fact) =>
+      selected.has(`fact:${fact.id || getFactId(fact.text)}`),
+    ),
+  };
+}
+
+export function editProjectMemoryCandidateText(
+  candidates: Partial<ProjectMemory> = {},
+  key: string,
+  text: string,
+): Partial<ProjectMemory> {
+  const nextText = sanitizeMemoryText(text);
+  if (!nextText) return candidates;
+  return {
+    ...candidates,
+    preferences: (candidates.preferences || []).map((item) =>
+      key === `preference:${item}` ? nextText : item,
+    ),
+    commands: (candidates.commands || []).map((item) =>
+      key === `command:${item}` ? nextText : item,
+    ),
+    facts: (candidates.facts || []).map((fact) =>
+      key === `fact:${fact.id || getFactId(fact.text)}`
+        ? { ...fact, id: key.replace(/^fact:/, ""), text: nextText }
+        : fact,
+    ),
+  };
+}
+
 function createMemoryReview(
   current: ProjectMemory,
   proposed: ProjectMemory,
@@ -194,6 +282,9 @@ function createMemoryReview(
   return {
     proposed,
     ...(candidates ? { candidates } : {}),
+    ...(candidates
+      ? { items: createMemoryReviewItems(current, candidates) }
+      : {}),
     diff: buildDiffPreview(
       serializeProjectMemory(current),
       serializeProjectMemory(proposed),
@@ -292,8 +383,13 @@ export function extractProjectMemoryCandidates(input: {
   steps?: string[];
   modifiedPaths?: string[];
   validationCommands?: string[];
+  summaryLines?: string[];
 }): Partial<ProjectMemory> {
-  const text = [input.finalText, ...(input.steps || [])]
+  const text = [
+    input.finalText,
+    ...(input.steps || []),
+    ...(input.summaryLines || []),
+  ]
     .filter(Boolean)
     .join("\n");
   const commands = compactUnique([
@@ -372,6 +468,7 @@ export async function rememberProjectMemoryFromRun(input: {
   steps?: string[];
   modifiedPaths?: string[];
   validationCommands?: string[];
+  summaryLines?: string[];
 }): Promise<ProjectMemory | null> {
   const candidates = extractProjectMemoryCandidates(input);
   if (
@@ -401,6 +498,7 @@ export async function rememberProjectMemoryFromRunWithReview(
     steps?: string[];
     modifiedPaths?: string[];
     validationCommands?: string[];
+    summaryLines?: string[];
   },
   reviewHandler: ProjectMemoryReviewHandler,
 ): Promise<ProjectMemory | null> {

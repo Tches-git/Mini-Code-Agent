@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { z } from "zod";
@@ -193,6 +194,49 @@ type CommandOutputSnapshot = {
 };
 
 let lastCommandOutputSnapshot: CommandOutputSnapshot | null = null;
+
+type PolicyConfig = {
+  allow?: string[];
+  confirm?: string[];
+  block?: string[];
+  sandboxDefault?: boolean;
+};
+
+let cachedPolicyConfig: {
+  path: string;
+  mtimeMs: number;
+  config: PolicyConfig;
+} | null = null;
+
+function getPolicyConfigPath(): string {
+  return path.join(getWorkspaceRoot(), ".mini-claude-code", "policy.json");
+}
+
+async function readPolicyConfig(): Promise<PolicyConfig> {
+  const configPath = getPolicyConfigPath();
+  try {
+    const stat = await fs.stat(configPath);
+    if (
+      cachedPolicyConfig?.path === configPath &&
+      cachedPolicyConfig.mtimeMs === stat.mtimeMs
+    ) {
+      return cachedPolicyConfig.config;
+    }
+    const parsed = JSON.parse(
+      await fs.readFile(configPath, "utf8"),
+    ) as PolicyConfig;
+    const config: PolicyConfig = {
+      allow: Array.isArray(parsed.allow) ? parsed.allow : [],
+      confirm: Array.isArray(parsed.confirm) ? parsed.confirm : [],
+      block: Array.isArray(parsed.block) ? parsed.block : [],
+      sandboxDefault: Boolean(parsed.sandboxDefault),
+    };
+    cachedPolicyConfig = { path: configPath, mtimeMs: stat.mtimeMs, config };
+    return config;
+  } catch {
+    return {};
+  }
+}
 
 function parseConfiguredRules(envName: string): string[] {
   const raw = process.env[envName];
@@ -689,6 +733,73 @@ function isCommandTimeoutResult(result: {
   );
 }
 
+async function shouldSandboxCommand(requested?: boolean): Promise<boolean> {
+  if (requested !== undefined) return requested;
+  const policyConfig = await readPolicyConfig();
+  return Boolean(policyConfig.sandboxDefault);
+}
+
+async function runCommandInSandbox(
+  file: string,
+  args: string[],
+): Promise<{
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  failed?: boolean;
+  code?: string | number;
+  timedOut?: boolean;
+  signal?: string | null;
+}> {
+  const workspaceRoot = getWorkspaceRoot();
+  const sandboxParent = await fs.mkdtemp(
+    path.join(os.tmpdir(), "mini-command-sandbox-"),
+  );
+  const sandboxPath = path.join(sandboxParent, "workspace");
+  try {
+    const gitCheck = await execa(
+      "git",
+      ["rev-parse", "--is-inside-work-tree"],
+      {
+        cwd: workspaceRoot,
+        reject: false,
+      },
+    );
+    if ((gitCheck.exitCode ?? 1) === 0) {
+      const worktree = await execa(
+        "git",
+        ["worktree", "add", "--detach", sandboxPath, "HEAD"],
+        { cwd: workspaceRoot, reject: false },
+      );
+      if ((worktree.exitCode ?? 1) !== 0) {
+        throw new Error(worktree.stderr || "创建命令 sandbox worktree 失败");
+      }
+    } else {
+      await fs.cp(workspaceRoot, sandboxPath, {
+        recursive: true,
+        filter: (source) => !source.includes(`${path.sep}.git${path.sep}`),
+      });
+    }
+    const result = await execa(file, args, {
+      cwd: sandboxPath,
+      reject: false,
+      timeout: COMMAND_TIMEOUT_MS,
+    });
+    return {
+      ...result,
+      exitCode: result.exitCode ?? null,
+      stdout:
+        `${result.stdout}\n\n[sandbox] 命令在隔离副本中执行，原工作区未修改: ${sandboxPath}`.trim(),
+    };
+  } finally {
+    await execa("git", ["worktree", "remove", "--force", sandboxPath], {
+      cwd: workspaceRoot,
+      reject: false,
+    }).catch(() => {});
+    await fs.rm(sandboxParent, { recursive: true, force: true });
+  }
+}
+
 function getLastCommandOutputPage(options: {
   stream?: "stdout" | "stderr";
   outputOffset?: number;
@@ -850,6 +961,43 @@ export async function getRunCommandPolicy(
   const syntaxIssue = isDangerous(normalizedCommand);
   if (syntaxIssue) {
     return { decision: "block", reason: syntaxIssue, executable: "" };
+  }
+
+  const policyConfig = await readPolicyConfig();
+  const policyBlockedRule = matchesConfiguredRule(
+    normalizedCommand,
+    policyConfig.block || [],
+  );
+  if (policyBlockedRule) {
+    return {
+      decision: "block",
+      reason: `命中 .mini-claude-code/policy.json block 规则: ${policyBlockedRule}`,
+      executable: "",
+    };
+  }
+
+  const policyAllowedRule = matchesConfiguredRule(
+    normalizedCommand,
+    policyConfig.allow || [],
+  );
+  if (policyAllowedRule) {
+    return {
+      decision: "allow",
+      reason: `命中 .mini-claude-code/policy.json allow 规则: ${policyAllowedRule}`,
+      executable: "",
+    };
+  }
+
+  const policyGuardedRule = matchesConfiguredRule(
+    normalizedCommand,
+    policyConfig.confirm || [],
+  );
+  if (policyGuardedRule) {
+    return {
+      decision: "confirm",
+      reason: `命中 .mini-claude-code/policy.json confirm 规则: ${policyGuardedRule}`,
+      executable: "",
+    };
   }
 
   const blockedRule = matchesConfiguredRule(
@@ -1018,6 +1166,7 @@ export const commandTools: ToolDefinition[] = [
         .max(MAX_COMMAND_OUTPUT_LINE_LIMIT)
         .optional(),
       confirmed: z.boolean().optional(),
+      sandbox: z.boolean().optional(),
     }),
     inputSchema: {
       type: "object",
@@ -1035,6 +1184,11 @@ export const commandTools: ToolDefinition[] = [
         confirmed: {
           type: "boolean",
           description: "仅当用户已明确确认后才传 true",
+        },
+        sandbox: {
+          type: "boolean",
+          description:
+            "可选，true 时在临时 sandbox/worktree 中执行命令，不修改当前工作区；未传时遵循 policy.json 的 sandboxDefault",
         },
       },
       required: ["command"],
@@ -1069,17 +1223,17 @@ export const commandTools: ToolDefinition[] = [
         !file.includes("/") && SAFE_TOOLCHAIN_EXECUTABLES.has(executable)
           ? await resolveLocalToolchainCommand(executable)
           : undefined;
-      const result = await execa(
-        localToolchainCommand?.file || file,
-        localToolchainCommand?.args
-          ? [...localToolchainCommand.args, ...args]
-          : args,
-        {
-          cwd: getWorkspaceRoot(),
-          reject: false,
-          timeout: COMMAND_TIMEOUT_MS,
-        },
-      );
+      const commandFile = localToolchainCommand?.file || file;
+      const commandArgs = localToolchainCommand?.args
+        ? [...localToolchainCommand.args, ...args]
+        : args;
+      const result = (await shouldSandboxCommand(input.sandbox))
+        ? await runCommandInSandbox(commandFile, commandArgs)
+        : await execa(commandFile, commandArgs, {
+            cwd: getWorkspaceRoot(),
+            reject: false,
+            timeout: COMMAND_TIMEOUT_MS,
+          });
       if (result.failed && result.code === "ENOENT") {
         throw new Error(`命令不存在或不可执行: ${file}`);
       }

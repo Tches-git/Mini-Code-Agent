@@ -46,4 +46,25 @@ describe("undo snapshots", () => {
 
     await expect(stat(path.join(workspace, "created.txt"))).rejects.toThrow();
   });
+
+  it("restores only selected files", async () => {
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+    await writeFile(path.join(workspace, "src/a.ts"), "before-a", "utf8");
+    await writeFile(path.join(workspace, "src/b.ts"), "before-b", "utf8");
+    const snapshots = await captureUndoSnapshots(["src/a.ts", "src/b.ts"]);
+    await writeFile(path.join(workspace, "src/a.ts"), "after-a", "utf8");
+    await writeFile(path.join(workspace, "src/b.ts"), "after-b", "utf8");
+
+    const diffs = await restoreUndoSnapshots(snapshots, {
+      paths: ["src/a.ts"],
+    });
+
+    expect(diffs.map((diff) => diff.path)).toEqual(["src/a.ts"]);
+    expect(await readFile(path.join(workspace, "src/a.ts"), "utf8")).toBe(
+      "before-a",
+    );
+    expect(await readFile(path.join(workspace, "src/b.ts"), "utf8")).toBe(
+      "after-b",
+    );
+  });
 });

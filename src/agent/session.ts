@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentTaskItem, ChatMessage } from "../types/agent.js";
+import { normalizeFilePath } from "../utils/path.js";
 import { getWorkspaceStateDir } from "../utils/runtime.js";
+import { isSummaryMessage } from "../utils/token.js";
 import type { SummaryFocus } from "./summary.js";
 
 function getSessionDir(): string {
@@ -29,15 +31,32 @@ export type SessionSummary = {
   turnCount: number;
 };
 
+export type SessionContextEntry = {
+  id: string;
+  sessionId: string;
+  sessionTitle: string;
+  text: string;
+  source: "summary" | "message" | "task";
+  files: string[];
+  keywords: string[];
+  taskIds: number[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type SessionData = SessionSummary & {
   version: number;
   messages: ChatMessage[];
   summaryLines: string[];
   summaryFocus: SummaryFocus;
   tasks?: AgentTaskItem[];
+  contextEntries?: SessionContextEntry[];
 };
 
-const SESSION_DATA_VERSION = 1;
+const SESSION_DATA_VERSION = 2;
+const MAX_SESSION_CONTEXT_ENTRIES = 80;
+const MAX_RELEVANT_CONTEXT_ENTRIES = 8;
+const SESSION_CONTEXT_MESSAGE_PREFIX = "[相关历史上下文]";
 
 function getSessionFile(id: string): string {
   return path.join(getSessionDir(), `${id}.json`);
@@ -49,6 +68,36 @@ function trimLine(value: string | null | undefined, maxLength = 120): string {
     return "";
   }
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
+}
+
+function uniqueRecent(values: string[], limit: number): string[] {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (let index = values.length - 1; index >= 0; index--) {
+    const value = values[index]?.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    deduped.unshift(value);
+  }
+  return deduped.slice(-limit);
+}
+
+function extractKeywords(text: string): string[] {
+  return uniqueRecent(
+    (text.toLowerCase().match(/[a-z0-9_./:-]{2,}/g) || []).filter(
+      (word) => !/^\d+$/.test(word),
+    ),
+    24,
+  );
+}
+
+function extractFiles(text: string): string[] {
+  return uniqueRecent(
+    (text.match(/[A-Za-z0-9_./-]+\.[A-Za-z0-9_]+/g) || []).map((file) =>
+      normalizeFilePath(file),
+    ),
+    12,
+  );
 }
 
 function getUserMessages(messages: ChatMessage[]): ChatMessage[] {
@@ -78,6 +127,149 @@ function deriveSummary(
 ): string {
   const firstSummaryLine = trimLine(summaryLines[0], 100);
   return firstSummaryLine || latestUserMessage || "暂无摘要";
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function normalizeNumberArray(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is number =>
+          typeof item === "number" && Number.isFinite(item),
+      )
+    : [];
+}
+
+function normalizeContextEntry(
+  entry: Partial<SessionContextEntry> | null | undefined,
+): SessionContextEntry | null {
+  if (!entry || typeof entry.id !== "string" || !entry.text?.trim()) {
+    return null;
+  }
+  const source = ["summary", "message", "task"].includes(entry.source || "")
+    ? (entry.source as SessionContextEntry["source"])
+    : "message";
+  return {
+    id: entry.id,
+    sessionId: typeof entry.sessionId === "string" ? entry.sessionId : "",
+    sessionTitle:
+      typeof entry.sessionTitle === "string" ? entry.sessionTitle : "新会话",
+    text: trimLine(entry.text, 240),
+    source,
+    files: uniqueRecent(
+      normalizeStringArray(entry.files).map(normalizeFilePath),
+      12,
+    ),
+    keywords: uniqueRecent(normalizeStringArray(entry.keywords), 24),
+    taskIds: uniqueRecent(
+      normalizeNumberArray(entry.taskIds).map(String),
+      12,
+    ).map(Number),
+    createdAt: typeof entry.createdAt === "string" ? entry.createdAt : "",
+    updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : "",
+  };
+}
+
+function createContextEntry(input: {
+  sessionId: string;
+  sessionTitle: string;
+  source: SessionContextEntry["source"];
+  text: string;
+  files?: string[];
+  keywords?: string[];
+  taskIds?: number[];
+  updatedAt: string;
+  fallbackCreatedAt?: string;
+}): SessionContextEntry | null {
+  const text = trimLine(input.text, 240);
+  if (!text || isSummaryMessage({ role: "assistant", content: text }))
+    return null;
+  const files = uniqueRecent(
+    [...(input.files || []), ...extractFiles(text)].map(normalizeFilePath),
+    12,
+  );
+  return {
+    id: `${input.source}:${text.toLowerCase().slice(0, 80)}`,
+    sessionId: input.sessionId,
+    sessionTitle: input.sessionTitle,
+    text,
+    source: input.source,
+    files,
+    keywords: uniqueRecent(
+      [...(input.keywords || []), ...extractKeywords(text)],
+      24,
+    ),
+    taskIds: uniqueRecent((input.taskIds || []).map(String), 12).map(Number),
+    createdAt: input.fallbackCreatedAt || input.updatedAt,
+    updatedAt: input.updatedAt,
+  };
+}
+
+function buildSessionContextEntries(input: {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  summaryLines: string[];
+  summaryFocus: SummaryFocus;
+  tasks?: AgentTaskItem[];
+  updatedAt: string;
+  existing?: SessionContextEntry[];
+}): SessionContextEntry[] {
+  const entries = new Map<string, SessionContextEntry>();
+  for (const existing of input.existing || []) {
+    const normalized = normalizeContextEntry(existing);
+    if (normalized) entries.set(normalized.id, normalized);
+  }
+
+  for (const line of input.summaryLines) {
+    const entry = createContextEntry({
+      sessionId: input.id,
+      sessionTitle: input.title,
+      source: "summary",
+      text: line,
+      files: input.summaryFocus.files,
+      keywords: input.summaryFocus.keywords,
+      updatedAt: input.updatedAt,
+    });
+    if (entry) entries.set(entry.id, entry);
+  }
+
+  for (const message of input.messages.slice(-12)) {
+    if (message.role !== "user" || !message.content) continue;
+    const entry = createContextEntry({
+      sessionId: input.id,
+      sessionTitle: input.title,
+      source: "message",
+      text: `用户任务: ${message.content}`,
+      updatedAt: input.updatedAt,
+    });
+    if (entry) entries.set(entry.id, entry);
+  }
+
+  for (const task of input.tasks || []) {
+    if (task.status === "todo") continue;
+    const details = [
+      task.blockedReason ? `阻塞: ${task.blockedReason}` : "",
+      task.note ? `备注: ${task.note}` : "",
+    ].filter(Boolean);
+    const entry = createContextEntry({
+      sessionId: input.id,
+      sessionTitle: input.title,
+      source: "task",
+      text: `任务 ${task.id} [${task.status}]: ${task.title}${details.length ? ` — ${details.join("; ")}` : ""}`,
+      taskIds: [task.id],
+      updatedAt: input.updatedAt,
+    });
+    if (entry) entries.set(entry.id, entry);
+  }
+
+  return Array.from(entries.values())
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, MAX_SESSION_CONTEXT_ENTRIES);
 }
 
 async function ensureSessionDir(): Promise<void> {
@@ -189,6 +381,7 @@ export async function saveSession(data: {
   const summary = deriveSummary(data.summaryLines, latestUserMessage);
   const title = existing?.title || deriveTitle(data.messages);
   const turnCount = getUserMessages(data.messages).length;
+  const tasks = data.tasks || existing?.tasks || [];
 
   const payload: SessionData = {
     id,
@@ -202,7 +395,17 @@ export async function saveSession(data: {
     messages: data.messages,
     summaryLines: data.summaryLines,
     summaryFocus: data.summaryFocus,
-    tasks: data.tasks || existing?.tasks || [],
+    tasks,
+    contextEntries: buildSessionContextEntries({
+      id,
+      title,
+      messages: data.messages,
+      summaryLines: data.summaryLines,
+      summaryFocus: data.summaryFocus,
+      tasks,
+      updatedAt,
+      existing: existing?.contextEntries,
+    }),
   };
 
   await fs.writeFile(
@@ -293,10 +496,123 @@ export async function loadSession(id?: string): Promise<SessionData | null> {
       summaryLines: data.summaryLines,
       summaryFocus: data.summaryFocus || { files: [], keywords: [] },
       tasks: Array.isArray(data.tasks) ? data.tasks : [],
+      contextEntries: Array.isArray(data.contextEntries)
+        ? data.contextEntries
+            .map((entry) =>
+              normalizeContextEntry(entry as Partial<SessionContextEntry>),
+            )
+            .filter((entry): entry is SessionContextEntry => Boolean(entry))
+        : [],
     };
   } catch {
     return null;
   }
+}
+
+function scoreContextEntry(
+  entry: SessionContextEntry,
+  query: SummaryFocus,
+): number {
+  const normalizedText = entry.text.toLowerCase();
+  let score = 0;
+  for (const file of query.files) {
+    const normalized = normalizeFilePath(file).toLowerCase();
+    const basename = path.basename(normalized);
+    if (
+      entry.files.some((candidate) => candidate.toLowerCase() === normalized)
+    ) {
+      score += 12;
+    } else if (basename && normalizedText.includes(basename)) {
+      score += 6;
+    }
+  }
+  for (const keyword of query.keywords) {
+    const normalized = keyword.toLowerCase();
+    if (normalized.length < 2) continue;
+    if (
+      entry.keywords.some((candidate) => candidate.toLowerCase() === normalized)
+    ) {
+      score += normalized.length >= 6 ? 3 : 1.5;
+    } else if (normalizedText.includes(normalized)) {
+      score += 1;
+    }
+  }
+  if (entry.source === "task") score += 0.4;
+  return score;
+}
+
+export async function findRelevantSessionContext(options: {
+  queryText?: string;
+  focus?: SummaryFocus;
+  taskIds?: number[];
+  sessionId?: string;
+  limit?: number;
+}): Promise<SessionContextEntry[]> {
+  const queryFocus: SummaryFocus = {
+    files: uniqueRecent(
+      [
+        ...(options.focus?.files || []),
+        ...extractFiles(options.queryText || ""),
+      ].map(normalizeFilePath),
+      12,
+    ),
+    keywords: uniqueRecent(
+      [
+        ...(options.focus?.keywords || []),
+        ...extractKeywords(options.queryText || ""),
+      ],
+      24,
+    ),
+  };
+  const taskIds = new Set(options.taskIds || []);
+  const sessions = options.sessionId
+    ? [await loadSession(options.sessionId)]
+    : await Promise.all(
+        (await listSessions()).map((session) => loadSession(session.id)),
+      );
+  const scored = sessions
+    .filter((session): session is SessionData => Boolean(session))
+    .flatMap((session) => session.contextEntries || [])
+    .map((entry) => ({
+      entry,
+      score:
+        scoreContextEntry(entry, queryFocus) +
+        (taskIds.size > 0 && entry.taskIds.some((id) => taskIds.has(id))
+          ? 20
+          : 0),
+    }))
+    .filter(({ score }) => score > 0)
+    .sort(
+      (a, b) =>
+        b.score - a.score || b.entry.updatedAt.localeCompare(a.entry.updatedAt),
+    )
+    .slice(0, Math.max(1, options.limit || MAX_RELEVANT_CONTEXT_ENTRIES));
+  return scored.map(({ entry }) => entry);
+}
+
+export function buildRelevantSessionContextMessage(
+  entries: SessionContextEntry[],
+): ChatMessage | null {
+  if (entries.length === 0) return null;
+  return {
+    role: "assistant",
+    content: `${SESSION_CONTEXT_MESSAGE_PREFIX}\n${entries
+      .map(
+        (entry) =>
+          `- ${entry.text}（${entry.sessionTitle} / ${entry.source}${entry.files.length ? ` / ${entry.files.slice(0, 3).join(", ")}` : ""}）`,
+      )
+      .join("\n")}`,
+  };
+}
+
+export function isRelevantSessionContextMessage(
+  message: ChatMessage | undefined,
+): boolean {
+  return Boolean(
+    message &&
+      message.role === "assistant" &&
+      message.content?.startsWith(SESSION_CONTEXT_MESSAGE_PREFIX),
+  );
 }
 
 export async function listSessions(): Promise<SessionSummary[]> {

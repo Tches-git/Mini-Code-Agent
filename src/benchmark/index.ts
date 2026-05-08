@@ -466,6 +466,14 @@ function getBenchmarkHistoryPath(outputPath: string): string {
   return path.join(parsed.dir, `${parsed.name}.history.json`);
 }
 
+function getBenchmarkDashboardPath(
+  outputPath: string,
+  extension: "md" | "html",
+) {
+  const parsed = path.parse(outputPath);
+  return path.join(parsed.dir, `${parsed.name}.dashboard.${extension}`);
+}
+
 async function readBenchmarkHistory(
   outputPath: string,
 ): Promise<BenchmarkHistoryEntry[]> {
@@ -504,6 +512,141 @@ async function readPreviousBenchmarkTrend(
   } catch {
     return undefined;
   }
+}
+
+function renderBenchmarkDashboardMarkdown(
+  report: BenchmarkReport,
+  history: BenchmarkHistoryEntry[],
+): string {
+  const trendRows = history
+    .slice(-20)
+    .map(
+      (entry) =>
+        `| ${entry.generatedAt} | ${(entry.successRate * 100).toFixed(1)}% | ${entry.passed}/${entry.executed} | ${entry.avgDurationMs} | ${entry.failures.agent} | ${entry.failures.environment} |`,
+    );
+  return [
+    `# Benchmark Dashboard`,
+    "",
+    `Generated: ${report.generatedAt}`,
+    "",
+    "## Current Run",
+    "",
+    "| Metric | Value |",
+    "| --- | --- |",
+    `| Success rate | ${(report.summary.successRate * 100).toFixed(1)}% |`,
+    `| Passed / executed | ${report.summary.passed}/${report.summary.executed} |`,
+    `| Skipped | ${report.summary.skipped} |`,
+    `| Avg duration | ${report.summary.avgDurationMs} ms |`,
+    `| Avg tool calls | ${report.summary.avgToolCalls} |`,
+    `| Failures | agent=${report.summary.failures.agent}, environment=${report.summary.failures.environment} |`,
+    "",
+    "## Category Summary",
+    "",
+    "| Category | Passed / Executed | Skipped | Success rate |",
+    "| --- | --- | --- | --- |",
+    ...report.summary.byCategory.map(
+      (item) =>
+        `| ${item.category} | ${item.passed}/${item.executed} | ${item.skipped} | ${(item.successRate * 100).toFixed(1)}% |`,
+    ),
+    "",
+    "## Trend History",
+    "",
+    "| Generated | Success rate | Passed / Executed | Avg ms | Agent failures | Env failures |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...(trendRows.length
+      ? trendRows
+      : ["| n/a | n/a | n/a | n/a | n/a | n/a |"]),
+    "",
+    "## Slowest Tasks",
+    "",
+    "| Task | Duration ms | Tool calls | Failure type |",
+    "| --- | --- | --- | --- |",
+    ...report.summary.slowestTasks.map(
+      (item) =>
+        `| ${item.id} | ${item.durationMs} | ${item.toolCalls} | ${item.failureType} |`,
+    ),
+    "",
+    "## Failed Tasks",
+    "",
+    ...report.tasks
+      .filter((task) => !task.passed && !task.skipped)
+      .map(
+        (task) =>
+          `- **${task.id}** (${task.failureType}): ${task.finalText.replace(/\s+/g, " ").slice(0, 180)}`,
+      ),
+    report.tasks.some((task) => !task.passed && !task.skipped) ? "" : "- none",
+    "",
+  ].join("\n");
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function renderBenchmarkDashboardHtml(
+  report: BenchmarkReport,
+  history: BenchmarkHistoryEntry[],
+): string {
+  const rows = history
+    .slice(-20)
+    .map(
+      (entry) =>
+        `<tr><td>${escapeHtml(entry.generatedAt)}</td><td>${(entry.successRate * 100).toFixed(1)}%</td><td>${entry.passed}/${entry.executed}</td><td>${entry.avgDurationMs}</td><td>${entry.failures.agent}</td><td>${entry.failures.environment}</td></tr>`,
+    )
+    .join("\n");
+  const categories = report.summary.byCategory
+    .map(
+      (item) =>
+        `<tr><td>${escapeHtml(item.category)}</td><td>${item.passed}/${item.executed}</td><td>${item.skipped}</td><td>${(item.successRate * 100).toFixed(1)}%</td></tr>`,
+    )
+    .join("\n");
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Benchmark Dashboard</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:32px;color:#1f2937}table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid #d1d5db;padding:8px;text-align:left}.cards{display:flex;gap:12px;flex-wrap:wrap}.card{border:1px solid #d1d5db;border-radius:8px;padding:12px;background:#f9fafb}.ok{color:#047857}.fail{color:#b91c1c}</style>
+</head><body>
+<h1>Benchmark Dashboard</h1>
+<p>Generated: ${escapeHtml(report.generatedAt)}</p>
+<div class="cards">
+<div class="card"><strong>Success rate</strong><br>${(report.summary.successRate * 100).toFixed(1)}%</div>
+<div class="card"><strong>Passed / executed</strong><br>${report.summary.passed}/${report.summary.executed}</div>
+<div class="card"><strong>Avg duration</strong><br>${report.summary.avgDurationMs} ms</div>
+<div class="card"><strong>Failures</strong><br>agent=${report.summary.failures.agent}, env=${report.summary.failures.environment}</div>
+</div>
+<h2>Category Summary</h2><table><thead><tr><th>Category</th><th>Passed / Executed</th><th>Skipped</th><th>Success rate</th></tr></thead><tbody>${categories}</tbody></table>
+<h2>Trend History</h2><table><thead><tr><th>Generated</th><th>Success rate</th><th>Passed / Executed</th><th>Avg ms</th><th>Agent failures</th><th>Env failures</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No history</td></tr>'}</tbody></table>
+</body></html>`;
+}
+
+async function writeBenchmarkDashboards(
+  outputPath: string,
+  report: BenchmarkReport,
+): Promise<void> {
+  const history = await readBenchmarkHistory(outputPath);
+  const mdPath = getBenchmarkDashboardPath(outputPath, "md");
+  const htmlPath = getBenchmarkDashboardPath(outputPath, "html");
+  await mkdir(path.dirname(mdPath), { recursive: true });
+  await writeFile(
+    mdPath,
+    renderBenchmarkDashboardMarkdown(report, history),
+    "utf8",
+  );
+  await writeFile(
+    htmlPath,
+    renderBenchmarkDashboardHtml(report, history),
+    "utf8",
+  );
+}
+
+export function getBenchmarkDashboardPaths(outputPath: string) {
+  return {
+    markdown: getBenchmarkDashboardPath(outputPath, "md"),
+    html: getBenchmarkDashboardPath(outputPath, "html"),
+    history: getBenchmarkHistoryPath(outputPath),
+  };
 }
 
 async function appendBenchmarkHistory(
@@ -823,6 +966,7 @@ export async function runBenchmark(
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, JSON.stringify(report, null, 2), "utf8");
   await appendBenchmarkHistory(outputPath, report);
+  await writeBenchmarkDashboards(outputPath, report);
 
   return report;
 }

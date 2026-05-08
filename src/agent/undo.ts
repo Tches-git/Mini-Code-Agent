@@ -44,12 +44,26 @@ export async function captureUndoSnapshots(
   return snapshots;
 }
 
+export type UndoSelection = {
+  paths?: string[];
+};
+
 export async function restoreUndoSnapshots(
   snapshots: UndoSnapshot[],
+  selection: UndoSelection = {},
 ): Promise<DiffEntry[]> {
   const diffs: DiffEntry[] = [];
+  const selectedPaths = selection.paths?.length
+    ? new Set(selection.paths.map((item) => item.replace(/\\/g, "/")))
+    : null;
 
   for (const snapshot of snapshots) {
+    if (
+      selectedPaths &&
+      !selectedPaths.has(snapshot.path.replace(/\\/g, "/"))
+    ) {
+      continue;
+    }
     const resolved = resolveUndoPath(snapshot.path);
     let before = "";
     try {

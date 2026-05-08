@@ -3,7 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import { AgentOrchestrator } from "../agent/orchestrator.js";
-import type { AgentRunResult, ApprovalRequest } from "../types/agent.js";
+import type {
+  AgentRunResult,
+  ApprovalRequest,
+  ApprovalResponse,
+} from "../types/agent.js";
 import { getWorkspaceRoot, setWorkspaceRoot } from "../utils/runtime.js";
 
 export type SandboxRunResult = AgentRunResult & {
@@ -341,7 +345,7 @@ export async function runTaskInWorktreeSandbox(
   task: string,
   options?: {
     keep?: boolean;
-    onConfirmCommand?: (request: ApprovalRequest) => Promise<boolean>;
+    onConfirmCommand?: (request: ApprovalRequest) => Promise<ApprovalResponse>;
   },
 ): Promise<SandboxRunResult> {
   const originalWorkspace = getWorkspaceRoot();

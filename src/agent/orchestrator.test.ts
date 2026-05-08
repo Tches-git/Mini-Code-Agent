@@ -111,12 +111,37 @@ vi.mock("./session.js", () => ({
   saveSession: mockSaveSession,
   loadSession: vi.fn().mockResolvedValue(null),
   clearSession: vi.fn().mockResolvedValue(undefined),
+  findRelevantSessionContext: vi.fn().mockResolvedValue([]),
+  buildRelevantSessionContextMessage: vi.fn().mockReturnValue(null),
+  isRelevantSessionContextMessage: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("../tools/index.js", () => ({
   tools: fakeTools,
+  loadTools: vi.fn().mockResolvedValue(fakeTools),
   getToolMap: () =>
     new Map(fakeTools.map((t: { name: string }) => [t.name, t])),
+  getToolCapabilitySets: (activeTools: Array<{ name: string }>) => ({
+    readOnly: new Set(
+      activeTools
+        .filter((tool) =>
+          ["read_file", "glob_files", "search_text", "project_map"].includes(
+            tool.name,
+          ),
+        )
+        .map((tool) => tool.name),
+    ),
+    modifying: new Set(["write_file"]),
+    parallelizable: new Set(
+      activeTools
+        .filter((tool) =>
+          ["read_file", "glob_files", "search_text", "project_map"].includes(
+            tool.name,
+          ),
+        )
+        .map((tool) => tool.name),
+    ),
+  }),
 }));
 
 import { AgentOrchestrator, mergeParallelToolResults } from "./orchestrator.js";
@@ -592,6 +617,7 @@ describe("AgentOrchestrator", () => {
     expect(agent.undoStackDepth).toBe(2);
     expect(agent.canUndoLastRun).toBe(true);
 
+    expect(agent.getLastRunModifiedPaths()).toEqual(["src/file4.ts"]);
     const firstUndo = await agent.undoLastRun();
     expect(firstUndo.finalText).toContain("src/file4.ts");
     expect(agent.undoStackDepth).toBe(1);

@@ -181,6 +181,7 @@ type SemanticVectorProvider = (text: string) => Promise<number[]>;
 type ImportBinding = {
   imported: string;
   local: string;
+  typeOnly?: boolean;
 };
 
 type SemanticEmbeddingModule = {
@@ -840,17 +841,20 @@ function extractTopLevelSymbolsWithAst(
     }
   };
 
-  const hasExportModifier = (node: ts.Node) => {
+  const hasModifier = (node: ts.Node, kind: ts.SyntaxKind) => {
     const maybeModifiers = (
       node as { modifiers?: ts.NodeArray<ts.ModifierLike> }
     ).modifiers;
     return Boolean(
       maybeModifiers?.some(
-        (modifier: ts.ModifierLike) =>
-          modifier.kind === ts.SyntaxKind.ExportKeyword,
+        (modifier: ts.ModifierLike) => modifier.kind === kind,
       ),
     );
   };
+  const hasExportModifier = (node: ts.Node) =>
+    hasModifier(node, ts.SyntaxKind.ExportKeyword);
+  const hasDefaultModifier = (node: ts.Node) =>
+    hasModifier(node, ts.SyntaxKind.DefaultKeyword);
 
   const hasSymbolLikeInitializer = (node: ts.VariableDeclaration) => {
     const initializer = node.initializer;
@@ -864,9 +868,15 @@ function extractTopLevelSymbolsWithAst(
 
   for (const statement of sourceFile.statements) {
     if (ts.isFunctionDeclaration(statement)) {
-      if (hasExportModifier(statement)) addSymbol(statement.name?.text);
+      if (hasExportModifier(statement)) {
+        addSymbol(statement.name?.text);
+        if (hasDefaultModifier(statement)) addSymbol("default");
+      }
     } else if (ts.isClassDeclaration(statement)) {
-      if (hasExportModifier(statement)) addSymbol(statement.name?.text);
+      if (hasExportModifier(statement)) {
+        addSymbol(statement.name?.text);
+        if (hasDefaultModifier(statement)) addSymbol("default");
+      }
     } else if (ts.isInterfaceDeclaration(statement)) {
       if (hasExportModifier(statement)) addSymbol(statement.name.text);
     } else if (ts.isTypeAliasDeclaration(statement)) {
@@ -878,6 +888,9 @@ function extractTopLevelSymbolsWithAst(
       for (const declaration of statement.declarationList.declarations) {
         if (shouldIncludeStatement || hasSymbolLikeInitializer(declaration)) {
           addBindingName(declaration.name);
+          if (shouldIncludeStatement && hasDefaultModifier(statement)) {
+            addSymbol("default");
+          }
         }
       }
     } else if (ts.isExportDeclaration(statement) && statement.exportClause) {
@@ -998,19 +1011,31 @@ function extractImportedSymbolsWithAst(
       const clause = statement.importClause;
       if (clause?.name) {
         symbols.push(clause.name.text);
-        bindings.push({ imported: "default", local: clause.name.text });
+        bindings.push({
+          imported: "default",
+          local: clause.name.text,
+          typeOnly: clause.isTypeOnly,
+        });
       }
       if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
         for (const element of clause.namedBindings.elements) {
           const imported = element.propertyName?.text || element.name.text;
           symbols.push(imported);
-          bindings.push({ imported, local: element.name.text });
+          bindings.push({
+            imported,
+            local: element.name.text,
+            typeOnly: clause.isTypeOnly || element.isTypeOnly,
+          });
         }
       } else if (
         clause?.namedBindings &&
         ts.isNamespaceImport(clause.namedBindings)
       ) {
-        bindings.push({ imported: "*", local: clause.namedBindings.name.text });
+        bindings.push({
+          imported: "*",
+          local: clause.namedBindings.name.text,
+          typeOnly: clause.isTypeOnly,
+        });
       }
       imports.push({ specifier, symbols, bindings });
     } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
@@ -1024,7 +1049,11 @@ function extractImportedSymbolsWithAst(
         for (const element of statement.exportClause.elements) {
           const imported = element.propertyName?.text || element.name.text;
           symbols.push(imported);
-          bindings.push({ imported, local: element.name.text });
+          bindings.push({
+            imported,
+            local: element.name.text,
+            typeOnly: statement.isTypeOnly,
+          });
         }
       }
       imports.push({ specifier, symbols, bindings });
@@ -1049,8 +1078,23 @@ function extractAstCallsAndComments(
     return { calls: [], comments, localCallEdges: [] };
   }
 
+  type CallInfo = { name: string; receiver?: string };
+  type FunctionFlow = {
+    params: string[];
+    returns: CallInfo[];
+    parameterCalls: CallInfo[];
+  };
   const calls = new Set<string>();
   const localCallEdges: ProjectCallEdge[] = [];
+  const aliases = new Map<string, CallInfo[]>();
+  const functionReturnAliases = new Map<string, CallInfo[]>();
+  const functionFlows = new Map<string, FunctionFlow>();
+  const resolvingFunctionReturns = new Set<string>();
+  const objectAliases = new Map<string, Map<string, CallInfo[]>>();
+  const arrayAliases = new Map<string, CallInfo[]>();
+  const arrayObjectAliases = new Map<string, Map<string, CallInfo[]>>();
+  const stringAliases = new Map<string, string>();
+  const booleanAliases = new Map<string, boolean>();
   let currentCaller = "<module>";
   const addCall = (name: string | undefined) => {
     if (!name) return;
@@ -1077,43 +1121,557 @@ function extractAstCallsAndComments(
     }
     return null;
   };
-  const getCallInfo = (
-    node: ts.CallExpression,
-  ): { name: string; receiver?: string } | null => {
-    const expression = node.expression;
-    if (ts.isIdentifier(expression)) return { name: expression.text };
-    if (ts.isPropertyAccessExpression(expression)) {
+  const getParameterNames = (
+    parameters: ts.NodeArray<ts.ParameterDeclaration>,
+  ) =>
+    parameters
+      .map((parameter) =>
+        ts.isIdentifier(parameter.name) ? parameter.name.text : null,
+      )
+      .filter((name): name is string => Boolean(name));
+  const getFunctionLikeFlowSource = (
+    node: ts.Node,
+  ): {
+    name: string;
+    parameters: ts.NodeArray<ts.ParameterDeclaration>;
+    body: ts.ConciseBody;
+  } | null => {
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) {
       return {
-        name: expression.name.text,
-        receiver: ts.isIdentifier(expression.expression)
-          ? expression.expression.text
-          : undefined,
+        name: node.name.text,
+        parameters: node.parameters,
+        body: node.body,
+      };
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isArrowFunction(node.initializer) ||
+        ts.isFunctionExpression(node.initializer))
+    ) {
+      return {
+        name: node.name.text,
+        parameters: node.initializer.parameters,
+        body: node.initializer.body,
       };
     }
     return null;
+  };
+  const getBooleanLiteralValue = (
+    expression: ts.Expression,
+  ): boolean | null => {
+    if (expression.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (expression.kind === ts.SyntaxKind.FalseKeyword) return false;
+    if (ts.isIdentifier(expression))
+      return booleanAliases.get(expression.text) ?? null;
+    if (ts.isParenthesizedExpression(expression)) {
+      return getBooleanLiteralValue(expression.expression);
+    }
+    if (
+      ts.isPrefixUnaryExpression(expression) &&
+      expression.operator === ts.SyntaxKind.ExclamationToken
+    ) {
+      const value = getBooleanLiteralValue(expression.operand);
+      return value === null ? null : !value;
+    }
+    return null;
+  };
+  const getLiteralPropertyName = (expression: ts.Expression): string | null => {
+    if (ts.isIdentifier(expression)) {
+      return stringAliases.get(expression.text) || null;
+    }
+    if (
+      ts.isPropertyAccessExpression(expression) &&
+      ts.isIdentifier(expression.expression)
+    ) {
+      return (
+        stringAliases.get(
+          `${expression.expression.text}.${expression.name.text}`,
+        ) || null
+      );
+    }
+    if (
+      ts.isStringLiteral(expression) ||
+      ts.isNoSubstitutionTemplateLiteral(expression)
+    ) {
+      return expression.text;
+    }
+    if (ts.isParenthesizedExpression(expression)) {
+      return getLiteralPropertyName(expression.expression);
+    }
+    if (
+      ts.isAsExpression(expression) ||
+      ts.isTypeAssertionExpression(expression)
+    ) {
+      return getLiteralPropertyName(expression.expression);
+    }
+    if (
+      ts.isBinaryExpression(expression) &&
+      expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+    ) {
+      const left = getLiteralPropertyName(expression.left);
+      const right = getLiteralPropertyName(expression.right);
+      return left !== null && right !== null ? `${left}${right}` : null;
+    }
+    if (ts.isTemplateExpression(expression)) {
+      let text = expression.head.text;
+      for (const span of expression.templateSpans) {
+        const value = getLiteralPropertyName(span.expression);
+        if (value === null) return null;
+        text += value + span.literal.text;
+      }
+      return text;
+    }
+    return null;
+  };
+  const uniqueCallInfos = (items: CallInfo[]): CallInfo[] => {
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      const key = `${item.receiver || ""}\0${item.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const getArgumentSubstitutions = (
+    params: string[],
+    args: ts.NodeArray<ts.Expression>,
+  ): Map<string, CallInfo[]> => {
+    const substitutions = new Map<string, CallInfo[]>();
+    params.forEach((param, index) => {
+      const argument = args[index];
+      if (!argument) return;
+      const infos = getExpressionCallInfos(argument);
+      if (infos.length > 0) substitutions.set(param, infos);
+    });
+    return substitutions;
+  };
+  const substituteCallInfo = (
+    info: CallInfo,
+    substitutions: Map<string, CallInfo[]>,
+  ): CallInfo[] => {
+    if (!info.receiver && substitutions.has(info.name)) {
+      return substitutions.get(info.name) || [];
+    }
+    if (info.receiver && substitutions.has(info.receiver)) {
+      return (substitutions.get(info.receiver) || []).map((receiver) => ({
+        name: info.name,
+        receiver: receiver.name,
+      }));
+    }
+    return [info];
+  };
+  const substituteCallInfos = (
+    infos: CallInfo[],
+    substitutions: Map<string, CallInfo[]>,
+  ) =>
+    uniqueCallInfos(
+      infos.flatMap((info) => substituteCallInfo(info, substitutions)),
+    );
+  const collectParameterCalls = (
+    body: ts.ConciseBody,
+    params: Set<string>,
+  ): CallInfo[] => {
+    const results: CallInfo[] = [];
+    const addParameterInfo = (info: CallInfo) => {
+      if (
+        params.has(info.name) ||
+        (info.receiver && params.has(info.receiver))
+      ) {
+        results.push(info);
+      }
+    };
+    const visitParamCall = (child: ts.Node) => {
+      if (ts.isCallExpression(child)) {
+        for (const info of getExpressionCallInfos(child.expression)) {
+          addParameterInfo(info);
+          const flow = functionFlows.get(info.name);
+          if (!flow?.parameterCalls.length) continue;
+          const substitutions = getArgumentSubstitutions(
+            flow.params,
+            child.arguments,
+          );
+          for (const nestedInfo of substituteCallInfos(
+            flow.parameterCalls,
+            substitutions,
+          )) {
+            addParameterInfo(nestedInfo);
+          }
+        }
+      }
+      if (results.length < 20) ts.forEachChild(child, visitParamCall);
+    };
+    visitParamCall(body);
+    return uniqueCallInfos(results);
+  };
+  const getFunctionReturnInfos = (node: ts.ConciseBody): CallInfo[] => {
+    if (!ts.isBlock(node)) return getExpressionCallInfos(node);
+    for (const statement of node.statements) {
+      if (
+        ts.isFunctionDeclaration(statement) ||
+        ts.isVariableStatement(statement)
+      ) {
+        rememberNestedFunctionFlows(statement);
+      }
+    }
+    const results: CallInfo[] = [];
+    const visitReturn = (child: ts.Node) => {
+      if (ts.isReturnStatement(child) && child.expression) {
+        results.push(...getExpressionCallInfos(child.expression));
+        return;
+      }
+      if (results.length < 20) ts.forEachChild(child, visitReturn);
+    };
+    ts.forEachChild(node, visitReturn);
+    return uniqueCallInfos(results);
+  };
+  const getExpressionCallInfos = (expression: ts.Expression): CallInfo[] => {
+    if (ts.isIdentifier(expression)) {
+      return aliases.get(expression.text) || [{ name: expression.text }];
+    }
+    if (ts.isPropertyAccessExpression(expression)) {
+      if (ts.isIdentifier(expression.expression)) {
+        const objectMemberAliases = objectAliases.get(
+          expression.expression.text,
+        );
+        const aliasedMember = objectMemberAliases?.get(expression.name.text);
+        if (aliasedMember?.length) return aliasedMember;
+        const receiverAliases = aliases.get(expression.expression.text);
+        if (receiverAliases?.length) {
+          return receiverAliases.map((alias) => ({
+            name: expression.name.text,
+            receiver: alias.name,
+          }));
+        }
+        return [
+          { name: expression.name.text, receiver: expression.expression.text },
+        ];
+      }
+      const nested = getExpressionCallInfos(expression.expression);
+      return nested.length > 0
+        ? nested.map((item) => ({
+            name: expression.name.text,
+            receiver: item.name,
+          }))
+        : [{ name: expression.name.text }];
+    }
+    if (ts.isElementAccessExpression(expression)) {
+      const argument = expression.argumentExpression;
+      const memberName = getLiteralPropertyName(argument);
+      if (ts.isIdentifier(expression.expression)) {
+        const objectMemberAliases = objectAliases.get(
+          expression.expression.text,
+        );
+        if (!memberName && objectMemberAliases) {
+          return Array.from(objectMemberAliases.values()).flat();
+        }
+        if (!memberName) return [];
+        const aliasedMember = objectMemberAliases?.get(memberName);
+        if (aliasedMember?.length) return aliasedMember;
+        const receiverAliases = aliases.get(expression.expression.text);
+        if (receiverAliases?.length) {
+          return receiverAliases.map((alias) => ({
+            name: memberName,
+            receiver: alias.name,
+          }));
+        }
+        return [{ name: memberName, receiver: expression.expression.text }];
+      }
+      if (!memberName) return [];
+      const nested = getExpressionCallInfos(expression.expression);
+      return nested.length > 0
+        ? nested.map((item) => ({ name: memberName, receiver: item.name }))
+        : [{ name: memberName }];
+    }
+    if (ts.isConditionalExpression(expression)) {
+      const condition = getBooleanLiteralValue(expression.condition);
+      if (condition === true)
+        return getExpressionCallInfos(expression.whenTrue);
+      if (condition === false)
+        return getExpressionCallInfos(expression.whenFalse);
+      return [
+        ...getExpressionCallInfos(expression.whenTrue),
+        ...getExpressionCallInfos(expression.whenFalse),
+      ];
+    }
+    if (ts.isBinaryExpression(expression)) {
+      return [
+        ...getExpressionCallInfos(expression.left),
+        ...getExpressionCallInfos(expression.right),
+      ];
+    }
+    if (ts.isParenthesizedExpression(expression)) {
+      return getExpressionCallInfos(expression.expression);
+    }
+    if (
+      ts.isAsExpression(expression) ||
+      ts.isTypeAssertionExpression(expression)
+    ) {
+      return getExpressionCallInfos(expression.expression);
+    }
+    if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+      return getFunctionReturnInfos(expression.body);
+    }
+    if (ts.isCallExpression(expression)) {
+      if (ts.isIdentifier(expression.expression)) {
+        const flow = functionFlows.get(expression.expression.text);
+        const substitutions = flow
+          ? getArgumentSubstitutions(flow.params, expression.arguments)
+          : new Map<string, CallInfo[]>();
+        const returned = functionReturnAliases.get(expression.expression.text);
+        if (returned?.length)
+          return substituteCallInfos(returned, substitutions);
+      }
+      const infos = getExpressionCallInfos(expression.expression);
+      return infos.length > 0
+        ? infos
+        : [{ name: expression.expression.getText(sourceFile) }];
+    }
+    return [];
+  };
+  const getCallInfos = (node: ts.CallExpression) =>
+    getExpressionCallInfos(node.expression);
+  const getObjectLiteralMembers = (
+    expression: ts.ObjectLiteralExpression,
+  ): Map<string, CallInfo[]> => {
+    const members = new Map<string, CallInfo[]>();
+    for (const property of expression.properties) {
+      if (!ts.isPropertyAssignment(property)) continue;
+      const propertyName = property.name;
+      const key =
+        ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName)
+          ? propertyName.text
+          : ts.isComputedPropertyName(propertyName)
+            ? getLiteralPropertyName(propertyName.expression)
+            : null;
+      if (!key) continue;
+      const propertyInfos = getExpressionCallInfos(property.initializer);
+      if (propertyInfos.length > 0) members.set(key, propertyInfos);
+    }
+    return members;
+  };
+  const rememberArrayAlias = (
+    name: string,
+    initializer: ts.ArrayLiteralExpression,
+  ) => {
+    const items = initializer.elements.flatMap((element) =>
+      ts.isSpreadElement(element) ? [] : getExpressionCallInfos(element),
+    );
+    if (items.length > 0) arrayAliases.set(name, uniqueCallInfos(items));
+    const objectMembers = new Map<string, CallInfo[]>();
+    for (const element of initializer.elements) {
+      if (
+        ts.isSpreadElement(element) ||
+        !ts.isObjectLiteralExpression(element)
+      ) {
+        continue;
+      }
+      for (const [key, infos] of getObjectLiteralMembers(element)) {
+        objectMembers.set(
+          key,
+          uniqueCallInfos([...(objectMembers.get(key) || []), ...infos]),
+        );
+      }
+    }
+    if (objectMembers.size > 0) arrayObjectAliases.set(name, objectMembers);
+  };
+  const rememberIdentifierAlias = (
+    name: string,
+    initializer: ts.Expression,
+  ) => {
+    const booleanValue = getBooleanLiteralValue(initializer);
+    if (booleanValue !== null) booleanAliases.set(name, booleanValue);
+    const literal = getLiteralPropertyName(initializer);
+    if (literal) stringAliases.set(name, literal);
+    if (ts.isArrayLiteralExpression(initializer)) {
+      rememberArrayAlias(name, initializer);
+    }
+    if (
+      !ts.isArrowFunction(initializer) &&
+      !ts.isFunctionExpression(initializer)
+    ) {
+      const infos = getExpressionCallInfos(initializer);
+      if (infos.length > 0) aliases.set(name, infos);
+    }
+    if (!ts.isObjectLiteralExpression(initializer)) return;
+    for (const property of initializer.properties) {
+      if (!ts.isPropertyAssignment(property)) continue;
+      const propertyName = property.name;
+      const key =
+        ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName)
+          ? propertyName.text
+          : ts.isComputedPropertyName(propertyName)
+            ? getLiteralPropertyName(propertyName.expression)
+            : null;
+      if (!key) continue;
+      const literalValue = getLiteralPropertyName(property.initializer);
+      if (literalValue !== null)
+        stringAliases.set(`${name}.${key}`, literalValue);
+    }
+    const members = getObjectLiteralMembers(initializer);
+    if (members.size > 0) objectAliases.set(name, members);
+  };
+  const rememberBindingAlias = (
+    name: ts.BindingName,
+    initializer: ts.Expression,
+  ) => {
+    if (ts.isIdentifier(name)) {
+      rememberIdentifierAlias(name.text, initializer);
+      return;
+    }
+    if (!ts.isObjectBindingPattern(name)) return;
+    const receiverInfos = getExpressionCallInfos(initializer);
+    const receiver = receiverInfos[0]?.name;
+    if (!receiver) return;
+    for (const element of name.elements) {
+      if (!ts.isIdentifier(element.name)) continue;
+      const propertyName = element.propertyName;
+      const memberName =
+        propertyName && ts.isIdentifier(propertyName)
+          ? propertyName.text
+          : element.name.text;
+      aliases.set(element.name.text, [{ name: memberName, receiver }]);
+    }
+  };
+  const rememberFunctionFlow = (node: ts.Node) => {
+    const source = getFunctionLikeFlowSource(node);
+    if (!source || resolvingFunctionReturns.has(source.name)) return;
+    resolvingFunctionReturns.add(source.name);
+    const params = getParameterNames(source.parameters);
+    const returned = getFunctionReturnInfos(source.body);
+    const parameterCalls = collectParameterCalls(source.body, new Set(params));
+    functionFlows.set(source.name, {
+      params,
+      returns: returned,
+      parameterCalls,
+    });
+    if (returned.length > 0) functionReturnAliases.set(source.name, returned);
+    resolvingFunctionReturns.delete(source.name);
+  };
+  const rememberNestedFunctionFlows = (node: ts.Node) => {
+    rememberFunctionFlow(node);
+    if (ts.isVariableStatement(node)) {
+      for (const declaration of node.declarationList.declarations) {
+        rememberFunctionFlow(declaration);
+      }
+    }
+  };
+  const rememberLoopAlias = (node: ts.ForOfStatement | ts.ForInStatement) => {
+    if (!ts.isIdentifier(node.expression)) return;
+    const iteratorName = node.expression.text;
+    if (ts.isVariableDeclarationList(node.initializer)) {
+      for (const declaration of node.initializer.declarations) {
+        if (!ts.isIdentifier(declaration.name)) continue;
+        const itemName = declaration.name.text;
+        const arrayItems = arrayAliases.get(iteratorName);
+        if (arrayItems?.length) aliases.set(itemName, arrayItems);
+        const objectMembers = arrayObjectAliases.get(iteratorName);
+        if (objectMembers?.size) objectAliases.set(itemName, objectMembers);
+      }
+    } else if (ts.isIdentifier(node.initializer)) {
+      const arrayItems = arrayAliases.get(iteratorName);
+      if (arrayItems?.length) aliases.set(node.initializer.text, arrayItems);
+      const objectMembers = arrayObjectAliases.get(iteratorName);
+      if (objectMembers?.size)
+        objectAliases.set(node.initializer.text, objectMembers);
+    }
+  };
+  const rememberAlias = (node: ts.Node) => {
+    rememberFunctionFlow(node);
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      rememberBindingAlias(node.name, node.initializer);
+      return;
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(node.left)
+    ) {
+      rememberIdentifierAlias(node.left.text, node.right);
+    }
+  };
+  const visitStatements = (statements: ts.NodeArray<ts.Statement>) => {
+    for (const statement of statements) visit(statement);
   };
   const visit = (node: ts.Node) => {
     const nextCaller = getFunctionName(node);
     const previousCaller = currentCaller;
     if (nextCaller) currentCaller = nextCaller;
+    rememberAlias(node);
     if (ts.isCallExpression(node)) {
-      const callInfo = getCallInfo(node);
-      addCall(callInfo?.name);
-      if (callInfo) {
+      const callInfos = getCallInfos(node);
+      for (const callInfo of callInfos) {
+        addCall(callInfo.name);
         localCallEdges.push({
           caller: currentCaller,
           callee: callInfo.name,
           via: "local",
           ...(callInfo.receiver ? { receiver: callInfo.receiver } : {}),
         });
+        const flow = functionFlows.get(callInfo.name);
+        if (!flow?.parameterCalls.length) continue;
+        const substitutions = getArgumentSubstitutions(
+          flow.params,
+          node.arguments,
+        );
+        for (const parameterCall of substituteCallInfos(
+          flow.parameterCalls,
+          substitutions,
+        )) {
+          addCall(parameterCall.name);
+          localCallEdges.push({
+            caller: currentCaller,
+            callee: parameterCall.name,
+            via: "local",
+            ...(parameterCall.receiver
+              ? { receiver: parameterCall.receiver }
+              : {}),
+          });
+        }
       }
+    }
+    if (ts.isIfStatement(node)) {
+      visit(node.expression);
+      const condition = getBooleanLiteralValue(node.expression);
+      if (condition === true) {
+        visit(node.thenStatement);
+      } else if (condition === false) {
+        if (node.elseStatement) visit(node.elseStatement);
+      } else {
+        visit(node.thenStatement);
+        if (node.elseStatement) visit(node.elseStatement);
+      }
+      currentCaller = previousCaller;
+      return;
+    }
+    if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+      visit(node.expression);
+      rememberLoopAlias(node);
+      visit(node.statement);
+      currentCaller = previousCaller;
+      return;
+    }
+    if (ts.isForStatement(node)) {
+      if (node.initializer) visit(node.initializer);
+      if (node.condition) visit(node.condition);
+      if (node.incrementor) visit(node.incrementor);
+      visit(node.statement);
+      currentCaller = previousCaller;
+      return;
+    }
+    if (ts.isWhileStatement(node) || ts.isDoStatement(node)) {
+      visit(node.expression);
+      visit(node.statement);
+      currentCaller = previousCaller;
+      return;
     }
     if (calls.size < 40) {
       ts.forEachChild(node, visit);
     }
     currentCaller = previousCaller;
   };
-  visit(sourceFile);
+  visitStatements(sourceFile.statements);
   return {
     calls: Array.from(calls).sort().slice(0, 40),
     comments,
@@ -1548,6 +2106,94 @@ async function semanticFind(
   };
 }
 
+async function buildLanguageServiceReferences(
+  files: string[],
+  baseDir: string,
+): Promise<Map<string, Map<string, Set<string>>>> {
+  const contents = new Map<string, string>();
+  for (const file of files) {
+    try {
+      contents.set(file, await fs.readFile(file, "utf8"));
+    } catch {}
+  }
+  const service = ts.createLanguageService({
+    getScriptFileNames: () => Array.from(contents.keys()),
+    getScriptVersion: () => "1",
+    getScriptSnapshot: (fileName) => {
+      const content = contents.get(fileName);
+      return content === undefined
+        ? undefined
+        : ts.ScriptSnapshot.fromString(content);
+    },
+    getCurrentDirectory: () => baseDir,
+    getCompilationSettings: () => ({
+      allowJs: true,
+      checkJs: false,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      target: ts.ScriptTarget.ES2022,
+    }),
+    getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+    fileExists: ts.sys.fileExists,
+    readFile: ts.sys.readFile,
+    readDirectory: ts.sys.readDirectory,
+    directoryExists: ts.sys.directoryExists,
+    getDirectories: ts.sys.getDirectories,
+  });
+  const references = new Map<string, Map<string, Set<string>>>();
+  for (const file of files) {
+    const content = contents.get(file);
+    const sourceFile = content ? parseSourceFile(content, file) : null;
+    if (!sourceFile) continue;
+    const exportedNames: Array<{ symbol: string; position: number }> = [];
+    const addName = (symbol: string | undefined, node: ts.Node | undefined) => {
+      if (!symbol || !node) return;
+      exportedNames.push({ symbol, position: node.getStart(sourceFile) });
+    };
+    for (const statement of sourceFile.statements) {
+      const modifiers = (
+        statement as { modifiers?: ts.NodeArray<ts.ModifierLike> }
+      ).modifiers;
+      const exported = Boolean(
+        modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        ),
+      );
+      if (
+        exported &&
+        (ts.isFunctionDeclaration(statement) ||
+          ts.isClassDeclaration(statement))
+      ) {
+        addName(statement.name?.text, statement.name);
+      } else if (exported && ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (ts.isIdentifier(declaration.name))
+            addName(declaration.name.text, declaration.name);
+        }
+      }
+    }
+    for (const exportedName of exportedNames.slice(0, 12)) {
+      const found = service.findReferences(file, exportedName.position) || [];
+      for (const group of found) {
+        for (const ref of group.references) {
+          if (ref.fileName === file) continue;
+          const targetPath = toDisplayPath(baseDir, file);
+          const importedBy = toDisplayPath(baseDir, ref.fileName);
+          const symbolMap =
+            references.get(targetPath) || new Map<string, Set<string>>();
+          const filesForSymbol =
+            symbolMap.get(exportedName.symbol) || new Set<string>();
+          filesForSymbol.add(importedBy);
+          symbolMap.set(exportedName.symbol, filesForSymbol);
+          references.set(targetPath, symbolMap);
+        }
+      }
+    }
+  }
+  service.dispose();
+  return references;
+}
+
 async function buildProjectMap(
   targetPath: string,
   confirmed = false,
@@ -1615,9 +2261,15 @@ async function buildProjectMap(
   }
 
   const pathSet = new Set(entries.map((entry) => entry.path));
+  const languageServiceReferences = await buildLanguageServiceReferences(
+    files,
+    resolved.fullPath,
+  );
   const importedByMap = new Map<string, Set<string>>();
   const referenceMap = new Map<string, Map<string, Set<string>>>();
   const importedSymbolTargets = new Map<string, Map<string, string>>();
+  const exportTargetMaps = new Map<string, Map<string, string>>();
+  const typeOnlyLocalsByEntry = new Map<string, Set<string>>();
 
   for (const entry of entries) {
     for (const relation of entry.relations) {
@@ -1644,14 +2296,35 @@ async function buildProjectMap(
           referenceMap.get(candidate) || new Map<string, Set<string>>();
         const importedTargets =
           importedSymbolTargets.get(entry.path) || new Map<string, string>();
+        const typeOnlySymbols = new Set(
+          imported.bindings
+            .filter((binding) => binding.typeOnly)
+            .map((binding) => binding.imported),
+        );
         for (const symbol of imported.symbols) {
           const files = symbolMap.get(symbol) || new Set<string>();
           files.add(entry.path);
           symbolMap.set(symbol, files);
-          importedTargets.set(symbol, candidate);
+          if (!typeOnlySymbols.has(symbol)) {
+            importedTargets.set(symbol, candidate);
+          }
         }
         for (const binding of imported.bindings) {
+          if (binding.typeOnly) {
+            const typeOnlyLocals =
+              typeOnlyLocalsByEntry.get(entry.path) || new Set<string>();
+            typeOnlyLocals.add(binding.local);
+            typeOnlyLocals.add(binding.imported);
+            typeOnlyLocalsByEntry.set(entry.path, typeOnlyLocals);
+            continue;
+          }
           importedTargets.set(binding.local, candidate);
+          if (binding.imported !== "*") {
+            const exportTargets =
+              exportTargetMaps.get(entry.path) || new Map<string, string>();
+            exportTargets.set(binding.local, candidate);
+            exportTargetMaps.set(entry.path, exportTargets);
+          }
         }
         importedSymbolTargets.set(entry.path, importedTargets);
         referenceMap.set(candidate, symbolMap);
@@ -1665,6 +2338,18 @@ async function buildProjectMap(
       symbolsToPath.set(symbol, entry.path);
     }
   }
+  const resolveExportTarget = (
+    fromPath: string,
+    symbol: string,
+    seen = new Set<string>(),
+  ): string | null => {
+    const key = `${fromPath}:${symbol}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    const direct = exportTargetMaps.get(fromPath)?.get(symbol);
+    if (!direct) return null;
+    return resolveExportTarget(direct, symbol, seen) || direct;
+  };
   for (const entry of entries) {
     for (const relation of entry.relations) {
       const candidate = resolveCandidatePath(pathSet, entry.path, relation);
@@ -1674,8 +2359,47 @@ async function buildProjectMap(
       if (!candidate || !target) continue;
       const importedTargets =
         importedSymbolTargets.get(entry.path) || new Map<string, string>();
+      const targetExports = exportTargetMaps.get(candidate);
+      const blockedTypeOnlySymbols = new Set<string>();
+      try {
+        const content = await fs.readFile(
+          path.resolve(resolved.fullPath, entry.path),
+          "utf8",
+        );
+        for (const imported of extractImportedSymbolsWithAst(
+          content,
+          entry.path,
+        )) {
+          const importedCandidate = resolveCandidatePath(
+            pathSet,
+            entry.path,
+            imported.specifier,
+          );
+          if (importedCandidate !== candidate) continue;
+          for (const binding of imported.bindings) {
+            if (binding.typeOnly) {
+              blockedTypeOnlySymbols.add(binding.local);
+              blockedTypeOnlySymbols.add(binding.imported);
+            }
+          }
+        }
+      } catch {}
       for (const symbol of target.symbols) {
-        importedTargets.set(symbol, candidate);
+        if (blockedTypeOnlySymbols.has(symbol)) continue;
+        importedTargets.set(
+          symbol,
+          resolveExportTarget(candidate, symbol) ||
+            targetExports?.get(symbol) ||
+            candidate,
+        );
+      }
+      if (target.symbols.includes("default")) {
+        importedTargets.set(
+          "default",
+          resolveExportTarget(candidate, "default") ||
+            targetExports?.get("default") ||
+            candidate,
+        );
       }
       importedSymbolTargets.set(entry.path, importedTargets);
     }
@@ -1685,15 +2409,30 @@ async function buildProjectMap(
     entry.dependsOn = Array.from(new Set(entry.dependsOn)).sort();
     entry.importedBy = Array.from(importedByMap.get(entry.path) || []).sort();
     const importedTargets = importedSymbolTargets.get(entry.path);
+    const typeOnlyLocals =
+      typeOnlyLocalsByEntry.get(entry.path) || new Set<string>();
     entry.callEdges = entry.callEdges.map((edge) => ({
       ...edge,
-      via:
-        (edge.receiver ? importedTargets?.get(edge.receiver) : undefined) ||
-        importedTargets?.get(edge.callee) ||
-        symbolsToPath.get(edge.callee) ||
-        edge.via,
+      via: typeOnlyLocals.has(edge.callee)
+        ? edge.via
+        : (edge.receiver ? importedTargets?.get(edge.receiver) : undefined) ||
+          importedTargets?.get(edge.callee) ||
+          symbolsToPath.get(edge.callee) ||
+          edge.via,
     }));
-    entry.references = Array.from(referenceMap.get(entry.path)?.entries() || [])
+    const combinedReferences = new Map<string, Set<string>>();
+    for (const [symbol, files] of referenceMap.get(entry.path)?.entries() ||
+      []) {
+      combinedReferences.set(symbol, new Set(files));
+    }
+    for (const [symbol, files] of languageServiceReferences
+      .get(entry.path)
+      ?.entries() || []) {
+      const bucket = combinedReferences.get(symbol) || new Set<string>();
+      for (const file of files) bucket.add(file);
+      combinedReferences.set(symbol, bucket);
+    }
+    entry.references = Array.from(combinedReferences.entries())
       .filter(([symbol]) => entry.symbols.includes(symbol))
       .map(([symbol, files]) => ({
         symbol,

@@ -62,3 +62,15 @@ export const PARALLELIZABLE_TOOLS = new Set([
   "update_tasks",
   "project_memory",
 ]);
+
+export function getReadOnlyTools(extraTools: Iterable<string> = []) {
+  return new Set([...READ_ONLY_TOOLS, ...extraTools]);
+}
+
+export function getModifyingTools(extraTools: Iterable<string> = []) {
+  return new Set([...MODIFYING_TOOLS, ...extraTools]);
+}
+
+export function getParallelizableTools(extraTools: Iterable<string> = []) {
+  return new Set([...PARALLELIZABLE_TOOLS, ...extraTools]);
+}

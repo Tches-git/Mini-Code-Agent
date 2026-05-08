@@ -14,6 +14,16 @@ const mockBenchmarkTasks = vi.hoisted(
 
 vi.mock("../benchmark/index.js", () => ({
   runBenchmark: mockRunBenchmark,
+  getBenchmarkDashboardPaths: (outputPath: string) => ({
+    markdown: `${outputPath}.md`,
+    html: `${outputPath}.html`,
+    history: `${outputPath}.history.json`,
+  }),
+}));
+
+vi.mock("../benchmark/runtime.js", () => ({
+  resolveBenchmarkReportPath: (outputPath?: string) =>
+    outputPath || "benchmark-report.json",
 }));
 
 vi.mock("../benchmark/tasks.js", () => ({
@@ -42,6 +52,8 @@ describe("runBenchmarkCommand", () => {
         byCategory: [],
         skipReasons: [],
         failures: { none: 0, skip: 0, agent: 0, environment: 0 },
+        slowestTasks: [],
+        releaseChecklist: [],
       },
       tasks: [],
     });
@@ -101,6 +113,8 @@ describe("runBenchmarkCommand", () => {
         ],
         skipReasons: [],
         failures: { none: 1, skip: 0, agent: 1, environment: 0 },
+        slowestTasks: [],
+        releaseChecklist: [],
       },
       tasks: [],
     });

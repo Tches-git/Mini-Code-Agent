@@ -3,7 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  buildRelevantSessionContextMessage,
   clearSession,
+  findRelevantSessionContext,
   listSessions,
   loadSession,
   saveSession,
@@ -41,10 +43,41 @@ describe("session storage", () => {
 
     const loaded = await loadSession();
     expect(loaded?.id).toBe(id);
-    expect(loaded?.version).toBe(1);
+    expect(loaded?.version).toBe(2);
     expect(loaded?.title).toContain("分析这个项目");
     expect(loaded?.summary).toContain("读取了 src/agent/orchestrator.ts");
     expect(loaded?.turnCount).toBe(1);
+    expect(
+      loaded?.contextEntries?.some((entry) =>
+        entry.text.includes("orchestrator.ts"),
+      ),
+    ).toBe(true);
+  });
+
+  it("indexes and retrieves relevant historical context by file and task", async () => {
+    const id = await saveSession({
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "修复 src/tools/search.ts 的引用分析" },
+      ],
+      summaryLines: ["文件操作: read_file src/tools/search.ts"],
+      summaryFocus: {
+        files: ["src/tools/search.ts"],
+        keywords: ["semantic_find", "references"],
+      },
+      tasks: [{ id: 3, title: "验证 search 引用分析", status: "blocked" }],
+    });
+
+    const byFile = await findRelevantSessionContext({
+      queryText: "继续修复 src/tools/search.ts references",
+    });
+    expect(byFile.some((entry) => entry.sessionId === id)).toBe(true);
+
+    const byTask = await findRelevantSessionContext({ taskIds: [3] });
+    expect(byTask[0]?.text).toContain("任务 3");
+
+    const message = buildRelevantSessionContextMessage(byFile.slice(0, 1));
+    expect(message?.content).toContain("[相关历史上下文]");
   });
 
   it("persists task graph items with sessions", async () => {
